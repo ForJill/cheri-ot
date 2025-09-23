@@ -28,7 +28,9 @@ module ibex_if_stage import ibex_pkg::*; #(
   parameter lfsr_perm_t  RndCnstLfsrPerm   = RndCnstLfsrPermDefault,
   parameter bit          BranchPredictor   = 1'b0,
   parameter bit          MemECC            = 1'b0,
-  parameter int unsigned MemDataWidth      = MemECC ? 32 + 7 : 32
+  parameter int unsigned MemDataWidth      = MemECC ? 32 + 7 : 32,
+  //cheri
+  parameter bit          CHERIoTEn         = 1'b0
 ) (
   input  logic                         clk_i,
   input  logic                         rst_ni,
@@ -117,6 +119,9 @@ module ibex_if_stage import ibex_pkg::*; #(
   // misc signals
   output logic                        pc_mismatch_alert_o,
   output logic                        if_busy_o                 // IF stage is busy fetching instr
+
+  //cheri
+  input  logic                         cheri_pmode_i
 );
 
   logic              instr_valid_id_d, instr_valid_id_q;

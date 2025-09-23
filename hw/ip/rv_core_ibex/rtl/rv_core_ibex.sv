@@ -112,7 +112,10 @@ module rv_core_ibex
 
   // interrupts and alerts
   input  prim_alert_pkg::alert_rx_t [NumAlerts-1:0] alert_rx_i,
-  output prim_alert_pkg::alert_tx_t [NumAlerts-1:0] alert_tx_o
+  output prim_alert_pkg::alert_tx_t [NumAlerts-1:0] alert_tx_o,
+
+  //cheri
+  input  logic                         cheri_pmode_i
 
 );
 
@@ -402,7 +405,8 @@ module rv_core_ibex
     .RndCnstIbexKey              ( RndCnstIbexKeyDefault    ),
     .RndCnstIbexNonce            ( RndCnstIbexNonceDefault  ),
     .DmHaltAddr                  ( DmHaltAddr               ),
-    .DmExceptionAddr             ( DmExceptionAddr          )
+    .DmExceptionAddr             ( DmExceptionAddr          ),
+    
   ) u_core (
     .clk_i              (ibex_top_clk_i),
     .rst_ni,
@@ -484,7 +488,10 @@ module rv_core_ibex
     .alert_minor_o          (alert_minor),
     .alert_major_internal_o (alert_major_internal),
     .alert_major_bus_o      (alert_major_bus),
-    .core_sleep_o           (core_sleep)
+    .core_sleep_o           (core_sleep),
+
+    //cheri
+    .cheri_pmode_i          (cheri_pmode_i)
   );
 
   logic core_sleep_q;

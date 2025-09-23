@@ -13,7 +13,7 @@
 /**
  * Top level module of the ibex RISC-V core
  */
-module ibex_core import ibex_pkg::*; #(
+module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   parameter bit          PMPEnable         = 1'b0,
   parameter int unsigned PMPGranularity    = 0,
   parameter int unsigned PMPNumRegions     = 4,
@@ -42,7 +42,10 @@ module ibex_core import ibex_pkg::*; #(
   parameter bit          MemECC            = 1'b0,
   parameter int unsigned MemDataWidth      = MemECC ? 32 + 7 : 32,
   parameter int unsigned DmHaltAddr        = 32'h1A110800,
-  parameter int unsigned DmExceptionAddr   = 32'h1A110808
+  parameter int unsigned DmExceptionAddr   = 32'h1A110808,
+
+  //cheri
+  parameter bit          CHERIoTEn         = 1'b1
 ) (
   // Clock and Reset
   input  logic                         clk_i,
@@ -161,7 +164,10 @@ module ibex_core import ibex_pkg::*; #(
   output logic                         alert_minor_o,
   output logic                         alert_major_internal_o,
   output logic                         alert_major_bus_o,
-  output ibex_mubi_t                   core_busy_o
+  output ibex_mubi_t                   core_busy_o,
+
+  //cheri 
+  input  logic                         cheri_pmode_i
 );
 
   localparam int unsigned PMPNumChan      = 3;
@@ -428,7 +434,9 @@ module ibex_core import ibex_pkg::*; #(
     .RndCnstLfsrPerm  (RndCnstLfsrPerm),
     .BranchPredictor  (BranchPredictor),
     .MemECC           (MemECC),
-    .MemDataWidth     (MemDataWidth)
+    .MemDataWidth     (MemDataWidth),
+    //cheri
+    .CHERIoTEn        (CHERIoTEn)
   ) if_stage_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -504,7 +512,10 @@ module ibex_core import ibex_pkg::*; #(
     .id_in_ready_i(id_in_ready),
 
     .pc_mismatch_alert_o(pc_mismatch_alert),
-    .if_busy_o          (if_busy)
+    .if_busy_o          (if_busy),
+
+    //cheri
+    .cheri_pmode_i  (cheri_pmode_i)
   );
 
   // Core is waiting for the ISide when ID/EX stage is ready for a new instruction but none are
@@ -545,7 +556,9 @@ module ibex_core import ibex_pkg::*; #(
     .DataIndTiming  (DataIndTiming),
     .WritebackStage (WritebackStage),
     .BranchPredictor(BranchPredictor),
-    .MemECC         (MemECC)
+    .MemECC         (MemECC),
+    //cheri
+    .CHERIoTEn      (CHERIoTEn)
   ) id_stage_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -697,7 +710,10 @@ module ibex_core import ibex_pkg::*; #(
     .perf_dside_wait_o(perf_dside_wait),
     .perf_mul_wait_o  (perf_mul_wait),
     .perf_div_wait_o  (perf_div_wait),
-    .instr_id_done_o  (instr_id_done)
+    .instr_id_done_o  (instr_id_done),
+
+    //cheri
+    .cheri_pmode_i  (cheri_pmode_i)
   );
 
   // for RVFI only
@@ -757,7 +773,9 @@ module ibex_core import ibex_pkg::*; #(
 
   ibex_load_store_unit #(
     .MemECC(MemECC),
-    .MemDataWidth(MemDataWidth)
+    .MemDataWidth(MemDataWidth),
+    //cheri
+    .CHERIoTEn(CHERIoTEn)
   ) load_store_unit_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -1051,7 +1069,9 @@ module ibex_core import ibex_pkg::*; #(
     .PMPNumRegions    (PMPNumRegions),
     .RV32E            (RV32E),
     .RV32M            (RV32M),
-    .RV32B            (RV32B)
+    .RV32B            (RV32B),
+    //cheri
+    .CHERIoTEn        (CHERIoTEn)
   ) cs_registers_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),

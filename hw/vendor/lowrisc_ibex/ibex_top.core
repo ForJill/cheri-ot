@@ -9,6 +9,7 @@ filesets:
   files_rtl:
     depend:
       - lowrisc:ibex:ibex_pkg
+      - lowrisc:ibex:cheri_pkg
       - lowrisc:ibex:ibex_core
       - lowrisc:prim:and2
       - lowrisc:prim:buf

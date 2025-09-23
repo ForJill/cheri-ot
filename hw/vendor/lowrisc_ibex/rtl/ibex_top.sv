@@ -12,7 +12,7 @@
 /**
  * Top level module of the ibex RISC-V core
  */
-module ibex_top import ibex_pkg::*; #(
+module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   parameter bit          PMPEnable                    = 1'b0,
   parameter int unsigned PMPGranularity               = 0,
   parameter int unsigned PMPNumRegions                = 4,
@@ -38,7 +38,10 @@ module ibex_top import ibex_pkg::*; #(
   parameter int unsigned DmExceptionAddr              = 32'h1A110808,
   // Default seed and nonce for scrambling
   parameter logic [SCRAMBLE_KEY_W-1:0]   RndCnstIbexKey   = RndCnstIbexKeyDefault,
-  parameter logic [SCRAMBLE_NONCE_W-1:0] RndCnstIbexNonce = RndCnstIbexNonceDefault
+  parameter logic [SCRAMBLE_NONCE_W-1:0] RndCnstIbexNonce = RndCnstIbexNonceDefault,
+
+  //cheri
+  parameter bit          CHERIoTEn                    = 1'b0
 ) (
   // Clock and Reset
   input  logic                         clk_i,
@@ -139,7 +142,10 @@ module ibex_top import ibex_pkg::*; #(
   output logic                         core_sleep_o,
 
   // DFT bypass controls
-  input logic                          scan_rst_ni
+  input logic                          scan_rst_ni,
+
+  //cheri
+  input  logic                         cheri_pmode_i
 );
 
   localparam bit          Lockstep              = SecureIbex;
@@ -308,7 +314,9 @@ module ibex_top import ibex_pkg::*; #(
     .MemECC           (MemECC),
     .MemDataWidth     (MemDataWidth),
     .DmHaltAddr       (DmHaltAddr),
-    .DmExceptionAddr  (DmExceptionAddr)
+    .DmExceptionAddr  (DmExceptionAddr),
+    //cheri
+    .CHERIoTEn        (CHERIoTEn)
   ) u_ibex_core (
     .clk_i(clk),
     .rst_ni,
@@ -409,7 +417,8 @@ module ibex_top import ibex_pkg::*; #(
     .alert_minor_o         (core_alert_minor),
     .alert_major_internal_o(core_alert_major_internal),
     .alert_major_bus_o     (core_alert_major_bus),
-    .core_busy_o           (core_busy_d)
+    .core_busy_o           (core_busy_d),
+    .cheri_pmode_i
   );
 
   /////////////////////////////////
@@ -798,7 +807,8 @@ module ibex_top import ibex_pkg::*; #(
       crash_dump_o,
       double_fault_seen_o,
       fetch_enable_i,
-      core_busy_d
+      core_busy_dm,
+      cheri_pmode_i
     });
 
     logic [NumBufferBits-1:0] buf_in, buf_out;
@@ -858,6 +868,9 @@ module ibex_top import ibex_pkg::*; #(
 
     ibex_mubi_t                   core_busy_local;
 
+    //cheri
+    logic                         cheri_pmode_local;
+
     assign buf_in = {
       hart_id_i,
       boot_addr_i,
@@ -905,7 +918,8 @@ module ibex_top import ibex_pkg::*; #(
       crash_dump_o,
       double_fault_seen_o,
       fetch_enable_i,
-      core_busy_d
+      core_busy_d,
+      cheri_pmode_i
     };
 
     assign {
@@ -955,7 +969,9 @@ module ibex_top import ibex_pkg::*; #(
       crash_dump_local,
       double_fault_seen_local,
       fetch_enable_local,
-      core_busy_local
+      core_busy_local,
+      //cheri
+      cheri_pmode_local
     } = buf_out;
 
     // Manually buffer all input signals.
@@ -1008,7 +1024,10 @@ module ibex_top import ibex_pkg::*; #(
       .RegFileDataWidth (RegFileDataWidth),
       .MemECC           (MemECC),
       .DmHaltAddr       (DmHaltAddr),
-      .DmExceptionAddr  (DmExceptionAddr)
+      .DmExceptionAddr  (DmExceptionAddr),
+      
+      //cheri
+      .CHERIoTEn        (CHERIoTEn)
     ) u_ibex_lockstep (
       .clk_i                  (clk),
       .rst_ni                 (rst_ni),
@@ -1073,7 +1092,10 @@ module ibex_top import ibex_pkg::*; #(
       .alert_major_bus_o      (lockstep_alert_major_bus_local),
       .core_busy_i            (core_busy_local),
       .test_en_i              (test_en_i),
-      .scan_rst_ni            (scan_rst_ni)
+      .scan_rst_ni            (scan_rst_ni),
+
+      //cheri
+      .cheri_pmode_i          (cheri_pmode_local),
     );
 
     prim_buf u_prim_buf_alert_minor (

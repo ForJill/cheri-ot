@@ -13,6 +13,7 @@ filesets:
       - lowrisc:prim:lfsr
       - lowrisc:prim:mubi
       - lowrisc:ibex:ibex_pkg
+      - lowrisc:ibex:cheri_pkg
       - lowrisc:ibex:ibex_icache
       - lowrisc:dv:dv_fcov_macros
     files:
