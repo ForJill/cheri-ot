@@ -23,7 +23,8 @@ module ibex_cs_registers #(
   parameter int unsigned      PMPNumRegions     = 4,
   parameter bit               RV32E             = 0,
   parameter ibex_pkg::rv32m_e RV32M             = ibex_pkg::RV32MFast,
-  parameter ibex_pkg::rv32b_e RV32B             = ibex_pkg::RV32BNone
+  parameter ibex_pkg::rv32b_e RV32B             = ibex_pkg::RV32BNone,
+  parameter bit               CHERIoTEn         = 1'b1
 ) (
   // Clock and Reset
   input  logic                 clk_i,
@@ -118,7 +119,10 @@ module ibex_cs_registers #(
   input  logic                 mem_store_i,                 // store to memory in this cycle
   input  logic                 dside_wait_i,                // core waiting for the dside
   input  logic                 mul_wait_i,                  // core waiting for multiply
-  input  logic                 div_wait_i                   // core waiting for divide
+  input  logic                 div_wait_i,                   // core waiting for divide
+  
+  //cheri
+  input  logic                 cheri_pmode_i
 );
 
   import ibex_pkg::*;

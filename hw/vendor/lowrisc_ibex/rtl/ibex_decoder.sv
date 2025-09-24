@@ -17,7 +17,9 @@ module ibex_decoder #(
   parameter bit RV32E               = 0,
   parameter ibex_pkg::rv32m_e RV32M = ibex_pkg::RV32MFast,
   parameter ibex_pkg::rv32b_e RV32B = ibex_pkg::RV32BNone,
-  parameter bit BranchTargetALU     = 0
+  parameter bit BranchTargetALU     = 0,
+  //cheri
+  parameter bit CHERIoTEn           = 1'b0
 ) (
   input  logic                 clk_i,
   input  logic                 rst_ni,
@@ -94,7 +96,10 @@ module ibex_decoder #(
 
   // jump/branches
   output logic                 jump_in_dec_o,         // jump is being calculated in ALU
-  output logic                 branch_in_dec_o
+  output logic                 branch_in_dec_o,
+
+  //cheri
+  input  logic                 cheri_pmode_i
 );
 
   import ibex_pkg::*;

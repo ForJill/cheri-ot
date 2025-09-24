@@ -39,7 +39,8 @@ module rv_core_ibex
   parameter logic [ibex_pkg::SCRAMBLE_KEY_W-1:0] RndCnstIbexKeyDefault =
       ibex_pkg::RndCnstIbexKeyDefault,
   parameter logic [ibex_pkg::SCRAMBLE_NONCE_W-1:0] RndCnstIbexNonceDefault =
-      ibex_pkg::RndCnstIbexNonceDefault
+      ibex_pkg::RndCnstIbexNonceDefault,
+  parameter bit          CHERIoTEn                    = 1'b0
 ) (
   // Clock and Reset
   input  logic        clk_i,
@@ -406,7 +407,7 @@ module rv_core_ibex
     .RndCnstIbexNonce            ( RndCnstIbexNonceDefault  ),
     .DmHaltAddr                  ( DmHaltAddr               ),
     .DmExceptionAddr             ( DmExceptionAddr          ),
-    
+    .CHERIoTEn                   (CHERIoTEn)
   ) u_core (
     .clk_i              (ibex_top_clk_i),
     .rst_ni,

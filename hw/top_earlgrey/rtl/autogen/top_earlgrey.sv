@@ -122,7 +122,8 @@ module top_earlgrey #(
       tl_main_pkg::ADDR_SPACE_RV_DM__MEM + dm::HaltAddress[31:0],
   parameter int unsigned RvCoreIbexDmExceptionAddr =
       tl_main_pkg::ADDR_SPACE_RV_DM__MEM + dm::ExceptionAddress[31:0],
-  parameter bit RvCoreIbexPipeLine = 0
+  parameter bit RvCoreIbexPipeLine = 0,
+  parameter bit               CHERIoTEn         = 1'b0
 ) (
   // Multiplexed I/O
   input        [46:0] mio_in_i,
@@ -2611,7 +2612,8 @@ module top_earlgrey #(
     .SecureIbex(RvCoreIbexSecureIbex),
     .DmHaltAddr(RvCoreIbexDmHaltAddr),
     .DmExceptionAddr(RvCoreIbexDmExceptionAddr),
-    .PipeLine(RvCoreIbexPipeLine)
+    .PipeLine(RvCoreIbexPipeLine),
+    .CHERIoTEn(CHERIoTEn)
   ) u_rv_core_ibex (
       // [61]: fatal_sw_err
       // [62]: recov_sw_err

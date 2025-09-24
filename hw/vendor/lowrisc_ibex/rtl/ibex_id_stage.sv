@@ -25,7 +25,8 @@ module ibex_id_stage #(
   parameter bit               BranchTargetALU = 0,
   parameter bit               WritebackStage  = 0,
   parameter bit               BranchPredictor = 0,
-  parameter bit               MemECC          = 1'b0
+  parameter bit               MemECC          = 1'b0,
+  parameter bit               CHERIoTEn       = 1'b1
 ) (
   input  logic                      clk_i,
   input  logic                      rst_ni,
@@ -188,7 +189,10 @@ module ibex_id_stage #(
                                                         // access to finish before proceeding
   output logic                      perf_mul_wait_o,
   output logic                      perf_div_wait_o,
-  output logic                      instr_id_done_o
+  output logic                      instr_id_done_o,
+
+  //cheri
+  input  logic                      cheri_pmode_i
 );
 
   import ibex_pkg::*;
@@ -435,7 +439,9 @@ module ibex_id_stage #(
     .RV32E          (RV32E),
     .RV32M          (RV32M),
     .RV32B          (RV32B),
-    .BranchTargetALU(BranchTargetALU)
+    .BranchTargetALU(BranchTargetALU),
+    //cheri
+    .CHERIoTEn      (CHERIoTEn)
   ) decoder_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -506,7 +512,10 @@ module ibex_id_stage #(
 
     // jump/branches
     .jump_in_dec_o  (jump_in_dec),
-    .branch_in_dec_o(branch_in_dec)
+    .branch_in_dec_o(branch_in_dec),
+    
+    //cheri
+    .cheri_pmode_i (cheri_pmode_i)
   );
 
   /////////////////////////////////

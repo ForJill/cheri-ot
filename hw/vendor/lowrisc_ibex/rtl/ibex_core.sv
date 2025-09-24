@@ -45,7 +45,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   parameter int unsigned DmExceptionAddr   = 32'h1A110808,
 
   //cheri
-  parameter bit          CHERIoTEn         = 1'b1
+  parameter bit          CHERIoTEn         = 1'b0
 ) (
   // Clock and Reset
   input  logic                         clk_i,

@@ -118,7 +118,7 @@ module ibex_if_stage import ibex_pkg::*; #(
 
   // misc signals
   output logic                        pc_mismatch_alert_o,
-  output logic                        if_busy_o                 // IF stage is busy fetching instr
+  output logic                        if_busy_o,                 // IF stage is busy fetching instr
 
   //cheri
   input  logic                         cheri_pmode_i

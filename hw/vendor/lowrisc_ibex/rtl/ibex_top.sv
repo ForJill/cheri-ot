@@ -807,7 +807,7 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       crash_dump_o,
       double_fault_seen_o,
       fetch_enable_i,
-      core_busy_dm,
+      core_busy_d,
       cheri_pmode_i
     });
 
@@ -1095,7 +1095,7 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       .scan_rst_ni            (scan_rst_ni),
 
       //cheri
-      .cheri_pmode_i          (cheri_pmode_local),
+      .cheri_pmode_i          (cheri_pmode_local)
     );
 
     prim_buf u_prim_buf_alert_minor (

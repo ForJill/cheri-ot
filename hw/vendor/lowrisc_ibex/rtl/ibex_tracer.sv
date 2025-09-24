@@ -65,7 +65,10 @@ module ibex_tracer (
   input logic [ 3:0] rvfi_mem_rmask,
   input logic [ 3:0] rvfi_mem_wmask,
   input logic [31:0] rvfi_mem_rdata,
-  input logic [31:0] rvfi_mem_wdata
+  input logic [31:0] rvfi_mem_wdata,
+
+  //cheri
+  input  logic                         cheri_pmode_i
 );
 
   // These signals are part of RVFI, but not used in this module currently.

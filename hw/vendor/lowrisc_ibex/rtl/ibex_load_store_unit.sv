@@ -16,7 +16,9 @@
 
 module ibex_load_store_unit #(
   parameter bit          MemECC       = 1'b0,
-  parameter int unsigned MemDataWidth = MemECC ? 32 + 7 : 32
+  parameter int unsigned MemDataWidth = MemECC ? 32 + 7 : 32,
+  //cheri
+  parameter bit          CHERIoTEn   = 1'b0
 ) (
   input  logic         clk_i,
   input  logic         rst_ni,
@@ -67,7 +69,10 @@ module ibex_load_store_unit #(
   output logic         busy_o,
 
   output logic         perf_load_o,
-  output logic         perf_store_o
+  output logic         perf_store_o,
+
+  //cheri
+  input  logic         cheri_pmode_i
 );
 
   logic [31:0]  data_addr;

@@ -8,7 +8,7 @@
 // LockstepOffset cycles.
 
 // SEC_CM: LOGIC.SHADOW
-module ibex_lockstep import ibex_pkg::*; #(
+module ibex_lockstep import ibex_pkg::*; import cheri_pkg::*; #(
   parameter int unsigned LockstepOffset    = 2,
   parameter bit          PMPEnable         = 1'b0,
   parameter int unsigned PMPGranularity    = 0,
@@ -38,7 +38,9 @@ module ibex_lockstep import ibex_pkg::*; #(
   parameter bit          MemECC            = 1'b0,
   parameter int unsigned MemDataWidth      = MemECC ? 32 + 7 : 32,
   parameter int unsigned DmHaltAddr        = 32'h1A110800,
-  parameter int unsigned DmExceptionAddr   = 32'h1A110808
+  parameter int unsigned DmExceptionAddr   = 32'h1A110808,
+  //cheri
+  parameter bit          CHERIoTEn         = 1'b0
 ) (
   input  logic                         clk_i,
   input  logic                         rst_ni,
@@ -103,7 +105,10 @@ module ibex_lockstep import ibex_pkg::*; #(
   output logic                         alert_major_bus_o,
   input  ibex_mubi_t                   core_busy_i,
   input  logic                         test_en_i,
-  input  logic                         scan_rst_ni
+  input  logic                         scan_rst_ni,
+
+  //cheri
+  input  logic                         cheri_pmode_i
 );
 
   localparam int unsigned LockstepOffsetW = $clog2(LockstepOffset);
