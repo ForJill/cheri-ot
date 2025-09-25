@@ -18,7 +18,11 @@ module ibex_load_store_unit #(
   parameter bit          MemECC       = 1'b0,
   parameter int unsigned MemDataWidth = MemECC ? 32 + 7 : 32,
   //cheri
-  parameter bit          CHERIoTEn   = 1'b0
+  parameter bit          CHERIoTEn   = 1'b0,
+  parameter int unsigned DataWidth = 33,
+  parameter bit          MemCapFmt   = 1'b0,
+  parameter bit          CheriTBRE   = 1'b0,
+  parameter bit          CheriCapIT8 = 1'b0
 ) (
   input  logic         clk_i,
   input  logic         rst_ni,
@@ -33,8 +37,8 @@ module ibex_load_store_unit #(
   output logic [31:0]             data_addr_o,
   output logic                    data_we_o,
   output logic [3:0]              data_be_o,
-  output logic [MemDataWidth-1:0] data_wdata_o,
-  input  logic [MemDataWidth-1:0] data_rdata_i,
+  output logic [DataWidth-1:0] data_wdata_o,
+  input  logic [DataWidth-1:0] data_rdata_i,
 
   // signals to/from ID/EX stage
   input  logic         lsu_we_i,             // write enable                     -> from ID/EX
@@ -91,7 +95,7 @@ module ibex_load_store_unit #(
   logic [1:0]   data_offset;   // mux control for data to be written to memory
 
   logic [3:0]   data_be;
-  logic [31:0]  data_wdata;
+  logic [DataWidth-1:0]  data_wdata;
 
   logic [31:0]  data_rdata_ext;
 

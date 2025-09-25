@@ -1,0 +1,19 @@
+CAPI=2:
+# Copyright lowRISC contributors.
+# Licensed under the Apache License, Version 2.0, see LICENSE for details.
+# SPDX-License-Identifier: Apache-2.0
+name: "lowrisc:ibex:cheri_regfile:0.1"
+description: "regfile for cheri"
+
+filesets:
+  files_rtl:
+    depend:
+      - lowrisc:ibex:cheri_pkg
+    files:
+      - rtl/cheri_regfile.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

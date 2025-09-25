@@ -123,7 +123,19 @@ module top_earlgrey #(
   parameter int unsigned RvCoreIbexDmExceptionAddr =
       tl_main_pkg::ADDR_SPACE_RV_DM__MEM + dm::ExceptionAddress[31:0],
   parameter bit RvCoreIbexPipeLine = 0,
-  parameter bit               CHERIoTEn         = 1'b0
+  parameter bit          CHERIoTEn         = 1'b0,
+  parameter int unsigned DataWidth              = 32,
+  parameter int unsigned HeapBase               = 32'h2001_0000,
+  parameter int unsigned TSMapBase              = 32'h2002_f000,
+  parameter int unsigned TSMapSize              = 1024,           
+  parameter bit          MemCapFmt              = 1'b0,
+  parameter bit          CheriPPLBC             = 1'b0,
+  parameter bit          CheriSBND2             = 1'b0,
+  parameter bit          CheriTBRE              = 1'b0,
+  parameter bit          CheriStkZ              = 1'b0,
+  parameter int unsigned MMRegDinW              = 128,
+  parameter int unsigned MMRegDoutW             = 64,
+  parameter bit          CheriCapIT8            = 1'b0
 ) (
   // Multiplexed I/O
   input        [46:0] mio_in_i,
@@ -2613,7 +2625,19 @@ module top_earlgrey #(
     .DmHaltAddr(RvCoreIbexDmHaltAddr),
     .DmExceptionAddr(RvCoreIbexDmExceptionAddr),
     .PipeLine(RvCoreIbexPipeLine),
-    .CHERIoTEn(CHERIoTEn)
+    .CHERIoTEn   (CHERIoTEn  ),
+    .DataWidth   (DataWidth  ),
+    .HeapBase    (HeapBase   ),
+    .TSMapBase   (TSMapBase  ),
+    .TSMapSize   (TSMapSize  ),
+    .MemCapFmt   (MemCapFmt  ),
+    .CheriPPLBC  (CheriPPLBC ),
+    .CheriSBND2  (CheriSBND2 ),
+    .CheriTBRE   (CheriTBRE  ),
+    .CheriStkZ   (CheriStkZ  ),
+    .MMRegDinW   (MMRegDinW  ),
+    .MMRegDoutW  (MMRegDoutW ),
+    .CheriCapIT8 (CheriCapIT8)
   ) u_rv_core_ibex (
       // [61]: fatal_sw_err
       // [62]: recov_sw_err

@@ -10,6 +10,7 @@ filesets:
     depend:
       - lowrisc:ibex:ibex_pkg
       - lowrisc:ibex:cheri_pkg
+      - lowrisc:ibex:cheri_regfile
       - lowrisc:ibex:ibex_core
       - lowrisc:prim:and2
       - lowrisc:prim:buf

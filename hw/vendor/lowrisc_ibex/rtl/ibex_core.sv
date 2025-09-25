@@ -45,7 +45,19 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   parameter int unsigned DmExceptionAddr   = 32'h1A110808,
 
   //cheri
-  parameter bit          CHERIoTEn         = 1'b0
+  parameter bit          CHERIoTEn         = 1'b0,
+  parameter int unsigned DataWidth         = 32, 
+  parameter int unsigned HeapBase          = 32'h2001_0000,
+  parameter int unsigned TSMapBase         = 32'h2002_f000,
+  parameter int unsigned TSMapSize         = 1024,
+  parameter bit          MemCapFmt         = 1'b0,
+  parameter bit          CheriPPLBC        = 1'b0,
+  parameter bit          CheriSBND2        = 1'b0,
+  parameter bit          CheriTBRE         = 1'b0,
+  parameter bit          CheriStkZ         = 1'b0,
+  parameter int unsigned MMRegDinW         = 128,
+  parameter int unsigned MMRegDoutW        = 64,
+  parameter bit          CheriCapIT8       = 1'b0
 ) (
   // Clock and Reset
   input  logic                         clk_i,
@@ -73,8 +85,8 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   output logic                         data_we_o,
   output logic [3:0]                   data_be_o,
   output logic [31:0]                  data_addr_o,
-  output logic [MemDataWidth-1:0]      data_wdata_o,
-  input  logic [MemDataWidth-1:0]      data_rdata_i,
+  output logic [DataWidth-1:0]         data_wdata_o,
+  input  logic [DataWidth-1:0]         data_rdata_i,
   input  logic                         data_err_i,
 
   // Register file interface
@@ -167,7 +179,17 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   output ibex_mubi_t                   core_busy_o,
 
   //cheri 
-  input  logic                         cheri_pmode_i
+  input  logic                         cheri_pmode_i,
+  input  logic                         cheri_tsafe_en_i,
+  output logic                         tsmap_cs_o,
+  output logic [15:0]                  tsmap_addr_o,
+  input  logic [31:0]                  tsmap_rdata_i,
+  input  logic [MMRegDinW-1:0]         mmreg_corein_i,
+  output logic [MMRegDoutW-1:0]        mmreg_coreout_o,
+  output reg_cap_t                     rf_wcap_wb_o,
+  input  reg_cap_t                     rf_rcap_a_i,
+  input  reg_cap_t                     rf_rcap_b_i,
+  input  logic [31:0]                  rf_reg_rdy_i
 );
 
   localparam int unsigned PMPNumChan      = 3;
@@ -558,7 +580,9 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .BranchPredictor(BranchPredictor),
     .MemECC         (MemECC),
     //cheri
-    .CHERIoTEn      (CHERIoTEn)
+    .CHERIoTEn      (CHERIoTEn),
+    .CheriPPLBC     (CheriPPLBC),
+    .CheriSBND2     (CheriSBND2)
   ) id_stage_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -775,7 +799,11 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .MemECC(MemECC),
     .MemDataWidth(MemDataWidth),
     //cheri
-    .CHERIoTEn(CHERIoTEn)
+    .CHERIoTEn(CHERIoTEn),
+    .DataWidth(DataWidth),
+    .MemCapFmt(MemCapFmt),
+    .CheriTBRE(CheriTBRE),
+    .CheriCapIT8(CheriCapIT8)
   ) load_store_unit_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),

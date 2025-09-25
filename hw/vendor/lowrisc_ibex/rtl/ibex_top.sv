@@ -41,7 +41,19 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   parameter logic [SCRAMBLE_NONCE_W-1:0] RndCnstIbexNonce = RndCnstIbexNonceDefault,
 
   //cheri
-  parameter bit          CHERIoTEn                    = 1'b0
+  parameter bit          CHERIoTEn                    = 1'b0,
+  parameter int unsigned DataWidth                    = 32,
+  parameter int unsigned HeapBase                     = 32'h2001_0000,
+  parameter int unsigned TSMapBase                    = 32'h2002_f000,
+  parameter int unsigned TSMapSize                    = 1024,           
+  parameter bit          MemCapFmt                    = 1'b0,
+  parameter bit          CheriPPLBC                   = 1'b0,
+  parameter bit          CheriSBND2                   = 1'b0,
+  parameter bit          CheriTBRE                    = 1'b0,
+  parameter bit          CheriStkZ                    = 1'b0,
+  parameter int unsigned MMRegDinW                    = 128,
+  parameter int unsigned MMRegDoutW                   = 64,
+  parameter bit          CheriCapIT8                  = 1'b0
 ) (
   // Clock and Reset
   input  logic                         clk_i,
@@ -69,9 +81,9 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   output logic                         data_we_o,
   output logic [3:0]                   data_be_o,
   output logic [31:0]                  data_addr_o,
-  output logic [31:0]                  data_wdata_o,
+  output logic [DataWidth-1:0]         data_wdata_o,
   output logic [6:0]                   data_wdata_intg_o,
-  input  logic [31:0]                  data_rdata_i,
+  input  logic [DataWidth-1:0]         data_rdata_i,
   input  logic [6:0]                   data_rdata_intg_i,
   input  logic                         data_err_i,
 
@@ -145,7 +157,16 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   input logic                          scan_rst_ni,
 
   //cheri
-  input  logic                         cheri_pmode_i
+  input  logic                         cheri_pmode_i,
+  input  logic                         cheri_tsafe_en_i,
+  //cheri TS map memory interface
+  output logic                         tsmap_cs_o,
+  output logic [15:0]                  tsmap_addr_o,
+  input  logic [31:0]                  tsmap_rdata_i,
+  input  logic [6:0]                   tsmap_rdata_intg_i,
+  input  logic [MMRegDinW-1:0]         mmreg_corein_i,
+  output logic [MMRegDoutW-1:0]        mmreg_coreout_o
+
 );
 
   localparam bit          Lockstep              = SecureIbex;
@@ -179,11 +200,14 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   logic [RegFileDataWidth-1:0] rf_wdata_wb_ecc;
   logic [RegFileDataWidth-1:0] rf_rdata_a_ecc, rf_rdata_a_ecc_buf;
   logic [RegFileDataWidth-1:0] rf_rdata_b_ecc, rf_rdata_b_ecc_buf;
+  // cheri
+  reg_cap_t                    rf_rcap_a, rf_rcap_b;
+  reg_cap_t                    rf_wcap;
 
   // Combined data and integrity for data and instruction busses
-  logic [MemDataWidth-1:0]     data_wdata_core;
-  logic [MemDataWidth-1:0]     data_rdata_core;
-  logic [MemDataWidth-1:0]     instr_rdata_core;
+  logic [DataWidth-1:0]     data_wdata_core;
+  logic [DataWidth-1:0]     data_rdata_core;
+  logic [DataWidth-1:0]     instr_rdata_core;
 
   // Core <-> RAMs signals
   logic [IC_NUM_WAYS-1:0]      ic_tag_req;
@@ -209,6 +233,16 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
 
   ibex_mubi_t                  fetch_enable_buf;
 
+  logic [31:0]   rf_reg_rdy;
+  logic [4:0]    rf_trvk_addr;
+  logic          rf_trvk_en;
+  logic          rf_trvk_clrtag;
+  logic [6:0]    rf_trvk_par;
+  logic [4:0]    rf_trsv_addr;
+  logic          rf_trsv_en;
+  logic [6:0]    rf_trsv_par;
+  logic          rf_alert;
+  
   /////////////////////
   // Main clock gate //
   /////////////////////
@@ -316,7 +350,19 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .DmHaltAddr       (DmHaltAddr),
     .DmExceptionAddr  (DmExceptionAddr),
     //cheri
-    .CHERIoTEn        (CHERIoTEn)
+    .CHERIoTEn        (CHERIoTEn),
+    .DataWidth        (DataWidth),
+    .HeapBase         (HeapBase),
+    .TSMapBase        (TSMapBase  ),
+    .TSMapSize        (TSMapSize),
+    .MemCapFmt        (MemCapFmt),
+    .CheriPPLBC       (CheriPPLBC),
+    .CheriSBND2       (CheriSBND2),
+    .CheriTBRE        (CheriTBRE),
+    .CheriStkZ        (CheriStkZ),
+    .MMRegDinW        (MMRegDinW),
+    .MMRegDoutW       (MMRegDoutW),
+    .CheriCapIT8      (CheriCapIT8)
   ) u_ibex_core (
     .clk_i(clk),
     .rst_ni,
@@ -418,15 +464,67 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .alert_major_internal_o(core_alert_major_internal),
     .alert_major_bus_o     (core_alert_major_bus),
     .core_busy_o           (core_busy_d),
-    .cheri_pmode_i
+
+    //cheri
+    .cheri_pmode_i         (cheri_pmode_i),
+    .cheri_tsafe_en_i      (cheri_tsafe_en_i),
+    .tsmap_cs_o            (tsmap_cs_o),
+    .tsmap_addr_o          (tsmap_addr_o),
+    .tsmap_rdata_i         (tsmap_rdata_i),
+    .mmreg_corein_i        (mmreg_corein_i),
+    .mmreg_coreout_o       (mmreg_coreout_o),
+    .rf_wcap_wb_o          (rf_wcap),
+    .rf_rcap_a_i           (rf_rcap_a),
+    .rf_rcap_b_i           (rf_rcap_b),
+    .rf_reg_rdy_i          (rf_reg_rdy)
   );
 
   /////////////////////////////////
   // Register file Instantiation //
   /////////////////////////////////
 
+  if (!CHERIoTEn) begin
+    assign rf_alert = 1'b0;
+  end
+
   logic rf_alert_major_internal;
-  if (RegFile == RegFileFF) begin : gen_regfile_ff
+
+  if (CHERIoTEn) begin : gen_regfile_cheriot
+
+    localparam int unsigned NRegs = RV32E? 16 : 32;
+    localparam int unsigned NCaps = 16;
+
+    cheri_regfile #(
+      .NREGS     (NRegs),
+      .NCAPS     (NCaps),
+      .RegFileECC(RegFileECC),
+      .DataWidth (RegFileDataWidth),
+      .CheriPPLBC(CheriPPLBC)
+    ) register_file_i (
+      .clk_i         (clk),
+      .rst_ni        (rst_ni),
+      .par_rst_ni    (rst_ni),
+      .raddr_a_i     (rf_raddr_a),
+      .rdata_a_o     (rf_rdata_a_ecc),
+      .rcap_a_o      (rf_rcap_a),
+      .raddr_b_i     (rf_raddr_b),
+      .rdata_b_o     (rf_rdata_b_ecc),
+      .rcap_b_o      (rf_rcap_b),
+      .waddr_a_i     (rf_waddr_wb),
+      .wdata_a_i     (rf_wdata_wb_ecc),
+      .wcap_a_i      (rf_wcap),
+      .we_a_i        (rf_we_wb),
+      .reg_rdy_o     (rf_reg_rdy),
+      .trvk_addr_i   (rf_trvk_addr),
+      .trvk_en_i     (rf_trvk_en),
+      .trvk_clrtag_i (rf_trvk_clrtag),
+      .trvk_par_i    (rf_trvk_par),
+      .trsv_addr_i   (rf_trsv_addr),
+      .trsv_en_i     (rf_trsv_en),
+      .trsv_par_i    (rf_trsv_par),
+      .alert_o       (rf_alert)
+    );
+  end else if (RegFile == RegFileFF) begin : gen_regfile_ff
     ibex_register_file_ff #(
       .RV32E            (RV32E),
       .DataWidth        (RegFileDataWidth),
@@ -452,6 +550,11 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       .we_a_i   (rf_we_wb),
       .err_o    (rf_alert_major_internal)
     );
+
+    assign rf_rcap_a  = NULL_REG_CAP;
+    assign rf_rcap_b  = NULL_REG_CAP;
+    assign rf_reg_rdy = {32{1'b1}};
+
   end else if (RegFile == RegFileFPGA) begin : gen_regfile_fpga
     ibex_register_file_fpga #(
       .RV32E            (RV32E),
@@ -478,6 +581,10 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       .we_a_i   (rf_we_wb),
       .err_o    (rf_alert_major_internal)
     );
+    assign rf_rcap_a  = NULL_REG_CAP;
+    assign rf_rcap_b  = NULL_REG_CAP;
+    assign rf_reg_rdy = {32{1'b1}};
+
   end else if (RegFile == RegFileLatch) begin : gen_regfile_latch
     ibex_register_file_latch #(
       .RV32E            (RV32E),
@@ -504,6 +611,11 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       .we_a_i   (rf_we_wb),
       .err_o    (rf_alert_major_internal)
     );
+
+    assign rf_rcap_a  = NULL_REG_CAP;
+    assign rf_rcap_b  = NULL_REG_CAP;
+    assign rf_reg_rdy = {32{1'b1}};
+
   end
 
   ///////////////////////////////

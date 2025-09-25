@@ -26,7 +26,9 @@ module ibex_id_stage #(
   parameter bit               WritebackStage  = 0,
   parameter bit               BranchPredictor = 0,
   parameter bit               MemECC          = 1'b0,
-  parameter bit               CHERIoTEn       = 1'b1
+  parameter bit               CHERIoTEn       = 1'b1,
+  parameter bit               CheriPPLBC        = 1'b0,
+  parameter bit               CheriSBND2        = 1'b0
 ) (
   input  logic                      clk_i,
   input  logic                      rst_ni,

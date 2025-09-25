@@ -40,7 +40,19 @@ module rv_core_ibex
       ibex_pkg::RndCnstIbexKeyDefault,
   parameter logic [ibex_pkg::SCRAMBLE_NONCE_W-1:0] RndCnstIbexNonceDefault =
       ibex_pkg::RndCnstIbexNonceDefault,
-  parameter bit          CHERIoTEn                    = 1'b0
+  parameter bit          CHERIoTEn                 = 1'b0,
+  parameter int unsigned DataWidth                 = 32,
+  parameter int unsigned HeapBase                  = 32'h2001_0000,
+  parameter int unsigned TSMapBase                 = 32'h2002_f000, // 4kB default
+  parameter int unsigned TSMapSize                 = 1024,           // 32-bit words
+  parameter bit          MemCapFmt                 = 1'b0,
+  parameter bit          CheriPPLBC                = 1'b0,
+  parameter bit          CheriSBND2                = 1'b0,
+  parameter bit          CheriTBRE                 = 1'b0,
+  parameter bit          CheriStkZ                 = 1'b0,
+  parameter int unsigned MMRegDinW                 = 128,
+  parameter int unsigned MMRegDoutW                = 64,
+  parameter bit          CheriCapIT8               = 1'b0
 ) (
   // Clock and Reset
   input  logic        clk_i,
@@ -117,7 +129,6 @@ module rv_core_ibex
 
   //cheri
   input  logic                         cheri_pmode_i
-
 );
 
   import top_pkg::*;
@@ -407,7 +418,19 @@ module rv_core_ibex
     .RndCnstIbexNonce            ( RndCnstIbexNonceDefault  ),
     .DmHaltAddr                  ( DmHaltAddr               ),
     .DmExceptionAddr             ( DmExceptionAddr          ),
-    .CHERIoTEn                   (CHERIoTEn)
+    .CHERIoTEn                   (CHERIoTEn                 ),
+    .DataWidth                   (DataWidth                 ),
+    .HeapBase                    (HeapBase                  ),
+    .TSMapBase                   (TSMapBase                 ),
+    .TSMapSize                   (TSMapSize                 ),
+    .MemCapFmt                   (MemCapFmt                 ),
+    .CheriPPLBC                  (CheriPPLBC                ),
+    .CheriSBND2                  (CheriSBND2                ),
+    .CheriTBRE                   (CheriTBRE                 ),
+    .CheriStkZ                   (CheriStkZ                 ),
+    .MMRegDinW                   (MMRegDinW                 ),
+    .MMRegDoutW                  (MMRegDoutW                ),
+    .CheriCapIT8                 (CheriCapIT8               )
   ) u_core (
     .clk_i              (ibex_top_clk_i),
     .rst_ni,
