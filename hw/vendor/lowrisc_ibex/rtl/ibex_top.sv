@@ -476,7 +476,14 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .rf_wcap_wb_o          (rf_wcap),
     .rf_rcap_a_i           (rf_rcap_a),
     .rf_rcap_b_i           (rf_rcap_b),
-    .rf_reg_rdy_i          (rf_reg_rdy)
+    .rf_reg_rdy_i          (rf_reg_rdy),
+      .rf_trsv_en_o     (rf_trsv_en),
+    .rf_trsv_addr_o   (rf_trsv_addr),
+    .rf_trvk_addr_o   (rf_trvk_addr),
+    .rf_trvk_en_o     (rf_trvk_en    ),
+    .rf_trvk_clrtag_o (rf_trvk_clrtag),
+    .rf_trvk_par_o    (),
+    .rf_trsv_par_o    (),
   );
 
   /////////////////////////////////

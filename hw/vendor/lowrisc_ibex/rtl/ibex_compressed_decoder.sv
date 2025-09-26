@@ -20,7 +20,8 @@ module ibex_compressed_decoder (
   input  logic [31:0] instr_i,
   output logic [31:0] instr_o,
   output logic        is_compressed_o,
-  output logic        illegal_instr_o
+  output logic        illegal_instr_o,
+  input  logic        cheri_pmode_i 
 );
   import ibex_pkg::*;
 

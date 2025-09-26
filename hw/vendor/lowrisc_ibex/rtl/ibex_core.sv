@@ -189,7 +189,14 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   output reg_cap_t                     rf_wcap_wb_o,
   input  reg_cap_t                     rf_rcap_a_i,
   input  reg_cap_t                     rf_rcap_b_i,
-  input  logic [31:0]                  rf_reg_rdy_i
+  input  logic [31:0]                  rf_reg_rdy_i,
+  output logic                         rf_trsv_en_o,
+  output logic [4:0]                   rf_trsv_addr_o,
+  output logic [6:0]                   rf_trsv_par_o,
+  output logic [4:0]                   rf_trvk_addr_o,
+  output logic                         rf_trvk_en_o,
+  output logic                         rf_trvk_clrtag_o,
+  output logic [6:0]                   rf_trvk_par_o,
 );
 
   localparam int unsigned PMPNumChan      = 3;
@@ -404,7 +411,93 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // for RVFI
   logic        illegal_insn_id, unused_illegal_insn_id; // ID stage sees an illegal instruction
+  
+  //cheri
+  logic [31:0] branch_target_ex_rv32;
+  logic [31:0] branch_target_ex_cheri;
+  logic          csr_mepcc_clrtag;
+  pcc_cap_t      pcc_cap_r, pcc_cap_w;
+  logic          cheri_branch_req;
+  logic          cheri_branch_req_spec;
+  logic          instr_is_cheri_id;
+  logic          instr_is_rv32lsu_id;
+  logic          cheri_exec_id;
+  logic [11:0]   cheri_imm12;
+  logic [19:0]   cheri_imm20;
+  logic [20:0]   cheri_imm21;
+  logic  [4:0]   cheri_cs2_dec;
+  logic          cheri_load_id;
+  logic          cheri_store_id;
+  logic          cheri_rf_we;
+  logic [31:0]   cheri_result_data;
+  reg_cap_t      cheri_result_cap;
+  logic          cheri_ex_valid;
+  logic          cheri_ex_err;
+  logic [11:0]   cheri_ex_err_info;
+  logic          cheri_wb_err;
+  logic [15:0]   cheri_wb_err_info;
+  logic [OPDW-1:0] cheri_operator;
 
+  logic          rv32_lsu_req;
+  logic          rv32_lsu_we;
+  logic [1:0]    rv32_lsu_type;
+  logic [31:0]   rv32_lsu_wdata;
+  logic          rv32_lsu_sign_ext;
+  logic          rv32_lsu_addr_incr_req;
+  logic [31:0]   rv32_lsu_addr_last;
+  logic          rv32_lsu_resp_valid;
+
+  logic          cheri_csr_access;
+  logic [4:0]    cheri_csr_addr;
+  logic [31:0]   cheri_csr_wdata;
+  reg_cap_t      cheri_csr_wcap;
+  cheri_csr_op_e cheri_csr_op;
+  logic          cheri_csr_op_en;
+  logic [31:0]   cheri_csr_rdata;
+  reg_cap_t      cheri_csr_rcap;
+  logic          cheri_csr_set_mie;
+  logic          cheri_csr_clr_mie;
+
+  logic          cpu_lsu_is_cap, cpu_lsu_cheri_err;
+  logic [3:0]    cpu_lsu_lc_clrperm;
+
+  logic          csr_dbg_tclr_fault;
+
+  logic [31:0]   csr_mshwm;
+  logic [31:0]   csr_mshwmb;
+  logic          csr_mshwm_set;
+  logic [31:0]   csr_mshwm_new;
+  logic          ztop_wr;
+  logic [31:0]   ztop_wdata;
+  full_cap_t     ztop_wfcap;
+  logic [31:0]   ztop_rdata;
+  reg_cap_t      ztop_rcap;
+
+  logic          stkz_active;
+  logic          stkz_abort;
+  logic [31:0]   stkz_ptr;
+  logic [31:0]   stkz_base;
+
+  logic          lsu_tbre_resp_valid;
+  logic          lsu_tbre_resp_err;
+  logic          lsu_resp_is_wr;
+  logic [DataWidth-1:0] lsu_tbre_raw_rdata;   
+  logic          lsu_tbre_req_done;   
+  logic          lsu_tbre_addr_incr;
+  logic          tbre_lsu_req;
+  logic          tbre_lsu_is_cap;
+  logic          tbre_lsu_we;
+  logic [31:0]   tbre_lsu_addr;
+  logic [DataWidth-1:0] tbre_lsu_raw_wdata;
+  logic          tbre_trvk_en;
+  logic          tbre_trvk_clrtag;
+
+  logic          lsu_tbre_sel, cpu_lsu_dec;
+  logic          rf_trsv_en;
+
+  logic          cpu_stall_by_stkz, cpu_grant_to_stkz;
+  logic          instr_fetch_cheri_acc_vio;         
+  logic          instr_fetch_cheri_bound_vio;    
   //////////////////////
   // Clock management //
   //////////////////////
@@ -537,7 +630,11 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .if_busy_o          (if_busy),
 
     //cheri
-    .cheri_pmode_i  (cheri_pmode_i)
+    .debug_mode_i         (debug_mode),
+    .cheri_pmode_i  (cheri_pmode_i),
+    .pcc_cap_i          (pcc_cap_r),
+    .instr_fetch_cheri_acc_vio_o   (instr_fetch_cheri_acc_vio),       
+    .instr_fetch_cheri_bound_vio_o (instr_fetch_cheri_bound_vio)
   );
 
   // Core is waiting for the ISide when ID/EX stage is ready for a new instruction but none are
@@ -606,7 +703,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .instr_first_cycle_id_o(instr_first_cycle_id),
     .instr_valid_clear_o   (instr_valid_clear),
     .id_in_ready_o         (id_in_ready),
-    .instr_exec_i          (instr_exec),
     .instr_req_o           (instr_req_int),
     .pc_set_o              (pc_set),
     .pc_mux_o              (pc_mux_id),
@@ -719,6 +815,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .rf_waddr_wb_i    (rf_waddr_wb),
     .rf_wdata_fwd_wb_i(rf_wdata_fwd_wb),
     .rf_write_wb_i    (rf_write_wb),
+    .rf_reg_rdy_i     (rf_reg_rdy_i),
 
     .en_wb_o               (en_wb),
     .instr_type_wb_o       (instr_type_wb),
@@ -737,7 +834,28 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .instr_id_done_o  (instr_id_done),
 
     //cheri
-    .cheri_pmode_i  (cheri_pmode_i)
+    .cheri_pmode_i        (cheri_pmode_i),
+    .cheri_tsafe_en_i     (cheri_tsafe_en_i),
+    .csr_mepcc_clrtag_o   (csr_mepcc_clrtag),
+    .csr_pcc_perm_sr_i    (pcc_cap_r.perms[PERM_SR]),
+    .lsu_err_is_cheri_i   (lsu_err_is_cheri),
+    .cheri_exec_id_o       (cheri_exec_id),
+    .instr_is_cheri_id_o   (instr_is_cheri_id),
+    .instr_is_rv32lsu_id_o (instr_is_rv32lsu_id),
+    .cheri_imm12_o         (cheri_imm12),
+    .cheri_imm20_o         (cheri_imm20),
+    .cheri_imm21_o         (cheri_imm21),
+    .cheri_operator_o      (cheri_operator),
+    .cheri_cs2_dec_o       (cheri_cs2_dec),
+    .cheri_load_o          (cheri_load_id),
+    .cheri_store_o         (cheri_store_id),
+    .cheri_ex_valid_i      (cheri_ex_valid),
+    .cheri_ex_err_i        (cheri_ex_err),
+    .cheri_ex_err_info_i   (cheri_ex_err_info),
+    .cheri_wb_err_i        (cheri_wb_err),
+    .cheri_wb_err_info_i   (cheri_wb_err_info),
+    .cheri_branch_req_i    (cheri_branch_req_spec),
+    .cheri_branch_target_i (branch_target_ex_cheri)
   );
 
   // for RVFI only
@@ -788,6 +906,163 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .ex_valid_o(ex_valid)
   );
 
+//////////////
+  // cheri EX //
+  //////////////
+  if (CHERIoTEn) begin : g_cheri_ex
+    cheri_ex #(
+      .WritebackStage       (WritebackStage),
+      .MemCapFmt            (MemCapFmt),
+      .HeapBase             (HeapBase),
+      .TSMapBase            (TSMapBase),
+      .CheriPPLBC           (CheriPPLBC),
+      .CheriSBND2           (CheriSBND2),
+      .CheriStkZ            (CheriStkZ),
+      .CheriCapIT8          (CheriCapIT8)
+    ) u_cheri_ex (
+      .clk_i                (clk_i),
+      .rst_ni               (rst_ni),
+      .cheri_pmode_i        (cheri_pmode_i),
+      .cheri_tsafe_en_i     (cheri_tsafe_en_i),
+      .debug_mode_i         (debug_mode),
+      .fwd_we_i             (rf_write_wb),
+      .fwd_waddr_i          (rf_waddr_wb),
+      .fwd_wdata_i          (rf_wdata_fwd_wb),
+      .fwd_wcap_i           (rf_wcap_fwd_wb),
+      .rf_raddr_a_i         (rf_raddr_a),
+      .rf_rdata_a_i         (rf_rdata_a),
+      .rf_rcap_a_i          (rf_rcap_a_i),
+      .rf_raddr_b_i         (rf_raddr_b),
+      .rf_rdata_b_i         (rf_rdata_b),
+      .rf_rcap_b_i          (rf_rcap_b_i),
+      .rf_trsv_en_o         (rf_trsv_en),
+      .rf_waddr_i           (rf_waddr_id),
+      .pcc_cap_i            (pcc_cap_r),
+      .pcc_cap_o            (pcc_cap_w),
+      .pc_id_i              (pc_id),
+      .branch_req_o         (cheri_branch_req),
+      .branch_req_spec_o    (cheri_branch_req_spec),
+      .branch_target_o      (branch_target_ex_cheri),
+      .cheri_exec_id_i      (cheri_exec_id),
+      .instr_valid_i        (instr_valid_id),
+      .instr_first_cycle_i  (instr_first_cycle_id),
+      .instr_is_cheri_i     (instr_is_cheri_id),
+      .instr_is_rv32lsu_i   (instr_is_rv32lsu_id),
+      .instr_is_compressed_i(instr_is_compressed_id),
+      .cheri_imm12_i        (cheri_imm12),
+      .cheri_imm20_i        (cheri_imm20),
+      .cheri_imm21_i        (cheri_imm21),
+      .cheri_operator_i     (cheri_operator),
+      .cheri_cs2_dec_i      (cheri_cs2_dec),
+      .cheri_rf_we_o        (cheri_rf_we),
+      .result_data_o        (cheri_result_data),
+      .result_cap_o         (cheri_result_cap),
+      .cheri_ex_valid_o     (cheri_ex_valid),
+      .cheri_ex_err_o       (cheri_ex_err),
+      .cheri_ex_err_info_o  (cheri_ex_err_info),
+      .cheri_wb_err_o       (cheri_wb_err),
+      .cheri_wb_err_info_o  (cheri_wb_err_info),
+      .lsu_req_o            (cpu_lsu_req),
+      .lsu_is_cap_o         (cpu_lsu_is_cap),
+      .lsu_lc_clrperm_o     (cpu_lsu_lc_clrperm),
+      .lsu_cheri_err_o      (cpu_lsu_cheri_err),
+      .lsu_we_o             (cpu_lsu_we),
+      .lsu_addr_o           (cpu_lsu_addr),
+      .lsu_type_o           (cpu_lsu_type),
+      .lsu_wdata_o          (cpu_lsu_wdata),
+      .lsu_wcap_o           (cpu_lsu_wcap),
+      .lsu_sign_ext_o       (cpu_lsu_sign_ext),
+      .cpu_stall_by_stkz_o  (cpu_stall_by_stkz),
+      .cpu_grant_to_stkz_o  (cpu_grant_to_stkz),
+      .addr_incr_req_i      (lsu_addr_incr_req),
+      .addr_last_i          (lsu_addr_last),
+      .lsu_req_done_i       (lsu_req_done),
+      .rv32_lsu_req_i       (rv32_lsu_req),
+      .rv32_lsu_we_i        (rv32_lsu_we),
+      .rv32_lsu_type_i      (rv32_lsu_type),
+      .rv32_lsu_wdata_i     (rv32_lsu_wdata),
+      .rv32_lsu_sign_ext_i  (rv32_lsu_sign_ext),
+      .rv32_lsu_addr_i      (alu_adder_result_ex),
+      .rv32_addr_incr_req_o (rv32_lsu_addr_incr_req),
+      .rv32_addr_last_o     (rv32_lsu_addr_last),
+      .cpu_lsu_dec_o        (cpu_lsu_dec),  
+      .csr_rdata_i          (cheri_csr_rdata),
+      .csr_rcap_i           (cheri_csr_rcap),
+      .csr_mstatus_mie_i    (csr_mstatus_mie),
+      .csr_access_o         (cheri_csr_access),
+      .csr_addr_o           (cheri_csr_addr),
+      .csr_wdata_o          (cheri_csr_wdata),
+      .csr_wcap_o           (cheri_csr_wcap),
+      .csr_op_o             (cheri_csr_op),
+      .csr_op_en_o          (cheri_csr_op_en),
+      .csr_set_mie_o        (cheri_csr_set_mie),
+      .csr_clr_mie_o        (cheri_csr_clr_mie),
+      .csr_mshwm_i          (csr_mshwm),
+      .csr_mshwmb_i         (csr_mshwmb),
+      .csr_mshwm_set_o      (csr_mshwm_set),
+      .csr_mshwm_new_o      (csr_mshwm_new),
+      .stkz_active_i        (stkz_active),
+      .stkz_abort_i         (stkz_abort),
+      .stkz_ptr_i           (stkz_ptr),
+      .stkz_base_i          (stkz_base),
+      .ztop_wr_o            (ztop_wr),  
+      .ztop_wdata_o         (ztop_wdata),
+      .ztop_wfcap_o         (ztop_wfcap),
+      .ztop_rdata_i         (ztop_rdata),
+      .ztop_rcap_i          (ztop_rcap),
+      .csr_dbg_tclr_fault_i (csr_dbg_tclr_fault)
+    );
+
+    assign rf_trsv_en_o     = rf_trsv_en;
+    assign rf_trsv_addr_o   = rf_waddr_id;
+    assign branch_target_ex = (instr_valid_id & instr_is_cheri_id) ? branch_target_ex_cheri : branch_target_ex_rv32;
+  end else begin : gen_no_cheri_ex
+    assign rf_trsv_en_o           = 1'b0;
+    assign rf_trsv_addr_o         = 5'h0;
+                                  
+    assign cheri_branch_req       = 1'b0;
+    assign cheri_branch_req_spec  = 1'b0;
+    assign branch_target_ex       = branch_target_ex_rv32;
+    assign pcc_cap_w              = NULL_PCC_CAP;
+                                  
+    assign cheri_rf_we            = 1'b0;
+    assign cheri_result_data      = 32'h0;
+    assign cheri_result_cap       = NULL_REG_CAP;
+                                  
+    assign cheri_ex_valid         = 1'b0;
+    assign cheri_ex_err           = 1'b0;
+    assign cheri_ex_err_info      = 11'h0;
+    assign cheri_wb_err           = 1'b0;
+    assign cheri_wb_err_info      = 16'h0;
+
+    assign cpu_lsu_req            = rv32_lsu_req;
+    assign cpu_lsu_is_cap         = 1'b0;
+    assign cpu_lsu_lc_clrperm     = 4'h0;
+    assign cpu_lsu_cheri_err      = 1'b0;
+    assign cpu_lsu_we             = rv32_lsu_we;
+    assign cpu_lsu_addr           = alu_adder_result_ex;
+    assign cpu_lsu_type           = rv32_lsu_type;
+    assign cpu_lsu_wdata          = rv32_lsu_wdata;
+    assign cpu_lsu_wcap           = NULL_REG_CAP;
+    assign cpu_lsu_sign_ext       = rv32_lsu_sign_ext;
+    assign rv32_lsu_addr_incr_req = lsu_addr_incr_req;
+    assign rv32_lsu_addr_last     = lsu_addr_last;
+
+    assign cpu_lsu_dec            = 1'b0;
+    assign cheri_csr_access       = 1'b0;
+    assign cheri_csr_addr         = 5'h0;
+    assign cheri_csr_wdata        = 32'h0;
+    assign cheri_csr_wcap         = NULL_REG_CAP;
+    assign cheri_csr_op           = CHERI_CSR_NULL;
+    assign cheri_csr_op_en        = 1'b0;
+    assign cheri_csr_set_mie      = 1'b0;
+    assign cheri_csr_clr_mie      = 1'b0;
+     
+    assign csr_mshwm_set          = 1'b0;
+    assign csr_mshwm_new          = 1'b0;
+ 
+  end
+  
   /////////////////////
   // Load/store unit //
   /////////////////////
@@ -1083,7 +1358,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   assign csr_wdata  = alu_operand_a_ex;
   assign csr_addr   = csr_num_e'(csr_access ? alu_operand_b_ex[11:0] : 12'b0);
 
-  ibex_cs_registers #(
+    ibex_cs_registers #(
     .DbgTriggerEn     (DbgTriggerEn),
     .DbgHwBreakNum    (DbgHwBreakNum),
     .DataIndTiming    (DataIndTiming),
@@ -1098,11 +1373,12 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .RV32E            (RV32E),
     .RV32M            (RV32M),
     .RV32B            (RV32B),
-    //cheri
     .CHERIoTEn        (CHERIoTEn)
   ) cs_registers_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
+
+    .cheri_pmode_i  (cheri_pmode_i),
 
     // Hart ID from outside
     .hart_id_i      (hart_id_i),
@@ -1122,6 +1398,22 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .csr_op_en_i (csr_op_en),
     .csr_rdata_o (csr_rdata),
 
+    .cheri_csr_access_i   (cheri_csr_access),
+    .cheri_csr_addr_i     (cheri_csr_addr),
+    .cheri_csr_wdata_i    (cheri_csr_wdata),
+    .cheri_csr_wcap_i     (cheri_csr_wcap),
+    .cheri_csr_op_i       (cheri_csr_op),
+    .cheri_csr_op_en_i    (cheri_csr_op_en),
+    .cheri_csr_set_mie_i  (cheri_csr_set_mie),
+    .cheri_csr_clr_mie_i  (cheri_csr_clr_mie),
+    .cheri_csr_rdata_o    (cheri_csr_rdata),
+    .cheri_csr_rcap_o     (cheri_csr_rcap),
+
+    .csr_mshwm_o          (csr_mshwm),
+    .csr_mshwmb_o         (csr_mshwmb),
+    .csr_mshwm_set_i      (csr_mshwm_set),
+    .csr_mshwm_new_i      (csr_mshwm_new),
+
     // Interrupt related control signals
     .irq_software_i   (irq_software_i),
     .irq_timer_i      (irq_timer_i),
@@ -1133,7 +1425,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .csr_mstatus_mie_o(csr_mstatus_mie),
     .csr_mstatus_tw_o (csr_mstatus_tw),
     .csr_mepc_o       (csr_mepc),
-    .csr_mtval_o      (crash_dump_mtval),
 
     // PMP
     .csr_pmp_cfg_o    (csr_pmp_cfg),
@@ -1162,7 +1453,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .dummy_instr_seed_o   (dummy_instr_seed),
     .icache_enable_o      (icache_enable),
     .csr_shadow_err_o     (csr_shadow_err),
-    .ic_scr_key_valid_i   (ic_scr_key_valid_i),
 
     .csr_save_if_i     (csr_save_if),
     .csr_save_id_i     (csr_save_id),
@@ -1170,6 +1460,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .csr_restore_mret_i(csr_restore_mret_id),
     .csr_restore_dret_i(csr_restore_dret_id),
     .csr_save_cause_i  (csr_save_cause),
+    .csr_mepcc_clrtag_i   (csr_mepcc_clrtag),
     .csr_mcause_i      (exc_cause),
     .csr_mtval_i       (csr_mtval),
     .illegal_csr_insn_o(illegal_csr_insn_id),
@@ -1189,7 +1480,14 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .mem_store_i                (perf_store),
     .dside_wait_i               (perf_dside_wait),
     .mul_wait_i                 (perf_mul_wait),
-    .div_wait_i                 (perf_div_wait)
+    .div_wait_i                 (perf_div_wait),
+
+    .cheri_branch_req_i     (cheri_branch_req),
+    .cheri_branch_target_i  (branch_target_ex_cheri),
+    .pcc_cap_i              (pcc_cap_w),
+    .pcc_cap_o              (pcc_cap_r),
+    .csr_dbg_tclr_fault_o   (csr_dbg_tclr_fault),
+    .cheri_fatal_err_o      (cheri_fatal_err_o)
   );
 
   // These assertions are in top-level as instr_valid_id required as the enable term
@@ -1322,11 +1620,9 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   logic            new_debug_req;
   logic            new_nmi;
-  logic            new_nmi_int;
   logic            new_irq;
   ibex_pkg::irqs_t captured_mip;
   logic            captured_nmi;
-  logic            captured_nmi_int;
   logic            captured_debug_req;
   logic            captured_valid;
 
@@ -1335,13 +1631,11 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   ibex_pkg::irqs_t rvfi_ext_stage_pre_mip          [RVFI_STAGES+1];
   ibex_pkg::irqs_t rvfi_ext_stage_post_mip         [RVFI_STAGES];
   logic            rvfi_ext_stage_nmi              [RVFI_STAGES+1];
-  logic            rvfi_ext_stage_nmi_int          [RVFI_STAGES+1];
   logic            rvfi_ext_stage_debug_req        [RVFI_STAGES+1];
   logic            rvfi_ext_stage_debug_mode       [RVFI_STAGES];
   logic [63:0]     rvfi_ext_stage_mcycle           [RVFI_STAGES];
   logic [31:0]     rvfi_ext_stage_mhpmcounters     [RVFI_STAGES][10];
   logic [31:0]     rvfi_ext_stage_mhpmcountersh    [RVFI_STAGES][10];
-  logic            rvfi_ext_stage_ic_scr_key_valid [RVFI_STAGES];
   logic            rvfi_ext_stage_irq_valid        [RVFI_STAGES+1];
 
 
@@ -1396,13 +1690,11 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   end
 
   assign rvfi_ext_nmi              = rvfi_ext_stage_nmi              [RVFI_STAGES];
-  assign rvfi_ext_nmi_int          = rvfi_ext_stage_nmi_int          [RVFI_STAGES];
   assign rvfi_ext_debug_req        = rvfi_ext_stage_debug_req        [RVFI_STAGES];
   assign rvfi_ext_debug_mode       = rvfi_ext_stage_debug_mode       [RVFI_STAGES-1];
   assign rvfi_ext_mcycle           = rvfi_ext_stage_mcycle           [RVFI_STAGES-1];
   assign rvfi_ext_mhpmcounters     = rvfi_ext_stage_mhpmcounters     [RVFI_STAGES-1];
   assign rvfi_ext_mhpmcountersh    = rvfi_ext_stage_mhpmcountersh    [RVFI_STAGES-1];
-  assign rvfi_ext_ic_scr_key_valid = rvfi_ext_stage_ic_scr_key_valid [RVFI_STAGES-1];
   assign rvfi_ext_irq_valid        = rvfi_ext_stage_irq_valid        [RVFI_STAGES];
 
   // When an instruction takes a trap the `rvfi_trap` signal will be set. Instructions that take
@@ -1490,7 +1782,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   // appropriately.
   assign new_debug_req = (debug_req_i & ~debug_mode);
   assign new_nmi = irq_nm_i & ~nmi_mode & ~debug_mode;
-  assign new_nmi_int = id_stage_i.controller_i.irq_nm_int & ~nmi_mode & ~debug_mode;
   assign new_irq = irq_pending_o & (csr_mstatus_mie || (priv_mode_id == PRIV_LVL_U)) & ~nmi_mode &
                    ~debug_mode;
 
@@ -1499,7 +1790,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       captured_valid     <= 1'b0;
       captured_mip       <= '0;
       captured_nmi       <= 1'b0;
-      captured_nmi_int   <= 1'b0;
       captured_debug_req <= 1'b0;
       rvfi_irq_valid     <= 1'b0;
     end else  begin
@@ -1509,13 +1799,12 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       // When we already captured a trap, and there is upcoming nmi interrupt or
       // a debug request then recapture as nmi or debug request are supposed to
       // be serviced.
-      if (~instr_valid_id & (new_debug_req | new_irq | new_nmi | new_nmi_int) &
+      if (~instr_valid_id & (new_debug_req | new_irq | new_nmi) &
           ((~captured_valid) |
            (new_debug_req & ~captured_debug_req) |
            (new_nmi & ~captured_nmi & ~captured_debug_req))) begin
         captured_valid     <= 1'b1;
         captured_nmi       <= irq_nm_i;
-        captured_nmi_int   <= id_stage_i.controller_i.irq_nm_int;
         captured_mip       <= cs_registers_i.mip;
         captured_debug_req <= debug_req_i;
       end
@@ -1525,7 +1814,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       // interrupt occurs before another interrupt or debug request but both occur before the first
       // instruction of the handler is executed and retired (where the cosim will see all the
       // interrupts and debug requests at once with no way to determine which occurred first).
-      if (~instr_valid_id & ~new_debug_req & (new_irq | new_nmi | new_nmi_int) & ready_wb &
+      if (~instr_valid_id & ~new_debug_req & (new_irq | new_nmi) & ready_wb &
           ~captured_valid) begin
         rvfi_irq_valid <= 1'b1;
       end else begin
@@ -1549,16 +1838,12 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     if (!rst_ni) begin
       rvfi_ext_stage_pre_mip[0]       <= '0;
       rvfi_ext_stage_nmi[0]       <= '0;
-      rvfi_ext_stage_nmi_int[0]   <= '0;
       rvfi_ext_stage_debug_req[0] <= '0;
     end else if ((if_stage_i.instr_valid_id_d & if_stage_i.instr_new_id_d) | rvfi_irq_valid) begin
       rvfi_ext_stage_pre_mip[0]   <= instr_valid_id | ~captured_valid ? cs_registers_i.mip :
                                                                         captured_mip;
       rvfi_ext_stage_nmi[0]       <= instr_valid_id | ~captured_valid ? irq_nm_i :
                                                                         captured_nmi;
-      rvfi_ext_stage_nmi_int[0]   <=
-        instr_valid_id | ~captured_valid ? id_stage_i.controller_i.irq_nm_int :
-                                           captured_nmi_int;
       rvfi_ext_stage_debug_req[0] <= instr_valid_id | ~captured_valid ? debug_req_i        :
                                                                         captured_debug_req;
     end
@@ -1616,13 +1901,11 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
         rvfi_ext_stage_pre_mip[i+1]        <= '0;
         rvfi_ext_stage_post_mip[i]         <= '0;
         rvfi_ext_stage_nmi[i+1]            <= '0;
-        rvfi_ext_stage_nmi_int[i+1]        <= '0;
         rvfi_ext_stage_debug_req[i+1]      <= '0;
         rvfi_ext_stage_debug_mode[i]       <= '0;
         rvfi_ext_stage_mcycle[i]           <= '0;
         rvfi_ext_stage_mhpmcounters[i]     <= '{10{'0}};
         rvfi_ext_stage_mhpmcountersh[i]    <= '{10{'0}};
-        rvfi_ext_stage_ic_scr_key_valid[i] <= '0;
       end else begin
         rvfi_stage_valid[i] <= rvfi_stage_valid_d[i];
 
@@ -1652,7 +1935,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
             rvfi_stage_mem_addr[i]             <= rvfi_mem_addr_d;
             rvfi_ext_stage_debug_mode[i]       <= debug_mode;
             rvfi_ext_stage_mcycle[i]           <= cs_registers_i.mcycle_counter_i.counter_val_o;
-            rvfi_ext_stage_ic_scr_key_valid[i] <= cs_registers_i.cpuctrlsts_ic_scr_key_valid_q;
+  
             // This is done this way because SystemVerilog does not support looping through
             // gen_cntrs[k] within a for loop.
             for (int k=0; k < 10; k++) begin
@@ -1669,7 +1952,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
             rvfi_ext_stage_pre_mip[i+1]   <= rvfi_ext_stage_pre_mip[i];
             rvfi_ext_stage_post_mip[i]    <= cs_registers_i.mip;
             rvfi_ext_stage_nmi[i+1]       <= rvfi_ext_stage_nmi[i];
-            rvfi_ext_stage_nmi_int[i+1]   <= rvfi_ext_stage_nmi_int[i];
             rvfi_ext_stage_debug_req[i+1] <= rvfi_ext_stage_debug_req[i];
           end
         end else begin
@@ -1704,7 +1986,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
             rvfi_ext_stage_debug_mode[i]       <= rvfi_ext_stage_debug_mode[i-1];
             rvfi_ext_stage_mcycle[i]           <= rvfi_ext_stage_mcycle[i-1];
-            rvfi_ext_stage_ic_scr_key_valid[i] <= rvfi_ext_stage_ic_scr_key_valid[i-1];
             rvfi_ext_stage_mhpmcounters[i]     <= rvfi_ext_stage_mhpmcounters[i-1];
             rvfi_ext_stage_mhpmcountersh[i]    <= rvfi_ext_stage_mhpmcountersh[i-1];
           end
@@ -1717,7 +1998,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
             rvfi_ext_stage_pre_mip[i+1]   <= rvfi_ext_stage_pre_mip[i];
             rvfi_ext_stage_post_mip[i]    <= rvfi_ext_stage_post_mip[i-1];
             rvfi_ext_stage_nmi[i+1]       <= rvfi_ext_stage_nmi[i];
-            rvfi_ext_stage_nmi_int[i+1]   <= rvfi_ext_stage_nmi_int[i];
             rvfi_ext_stage_debug_req[i+1] <= rvfi_ext_stage_debug_req[i];
           end
         end

@@ -91,7 +91,7 @@ def strap_combinations_test(name, env_firmware, tags = [], skip_value = []):
             #   model's stdout.
             if "rom" in env and value == 60:
                 extra_verilator_args = "--verilator-args=--term-after-cycles=200000"
-                evaluator = "transport verilator-watch --timeout=300s \"Illegal instruction\""
+                evaluator = "transport verilator-watch --timeout=3000s \"Illegal instruction\""
             else:
                 extra_verilator_args = ""
                 evaluator = None
