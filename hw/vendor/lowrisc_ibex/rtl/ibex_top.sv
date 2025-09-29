@@ -41,7 +41,7 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   parameter logic [SCRAMBLE_NONCE_W-1:0] RndCnstIbexNonce = RndCnstIbexNonceDefault,
 
   //cheri
-  parameter bit          CHERIoTEn                    = 1'b0,
+  parameter bit          CHERIoTEn                    = 1'b1,
   parameter int unsigned DataWidth                    = 32,
   parameter int unsigned HeapBase                     = 32'h2001_0000,
   parameter int unsigned TSMapBase                    = 32'h2002_f000,
@@ -135,21 +135,23 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   output logic [31:0]                  rvfi_ext_pre_mip,
   output logic [31:0]                  rvfi_ext_post_mip,
   output logic                         rvfi_ext_nmi,
-  output logic                         rvfi_ext_nmi_int,
   output logic                         rvfi_ext_debug_req,
   output logic                         rvfi_ext_debug_mode,
-  output logic                         rvfi_ext_rf_wr_suppress,
   output logic [63:0]                  rvfi_ext_mcycle,
-  output logic [31:0]                  rvfi_ext_mhpmcounters [10],
-  output logic [31:0]                  rvfi_ext_mhpmcountersh [10],
-  output logic                         rvfi_ext_ic_scr_key_valid,
-  output logic                         rvfi_ext_irq_valid,
+
+  //cheri
+  output reg_cap_t                     rvfi_rs1_rcap,
+  output reg_cap_t                     rvfi_rs2_rcap,
+  output reg_cap_t                     rvfi_rd_wcap,
+  output logic                         rvfi_mem_is_cap,
+  output reg_cap_t                     rvfi_mem_rcap,
+  output reg_cap_t                     rvfi_mem_wcap,
+  output logic [31:0]                  rvfi_ext_mip,
 `endif
 
   // CPU Control Signals
   input  ibex_mubi_t                   fetch_enable_i,
   output logic                         alert_minor_o,
-  output logic                         alert_major_internal_o,
   output logic                         alert_major_bus_o,
   output logic                         core_sleep_o,
 
@@ -165,7 +167,8 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   input  logic [31:0]                  tsmap_rdata_i,
   input  logic [6:0]                   tsmap_rdata_intg_i,
   input  logic [MMRegDinW-1:0]         mmreg_corein_i,
-  output logic [MMRegDoutW-1:0]        mmreg_coreout_o
+  output logic [MMRegDoutW-1:0]        mmreg_coreout_o,
+  output logic                         data_is_cap_o
 
 );
 
@@ -176,8 +179,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   localparam bit          RegFileWrenCheck      = SecureIbex;
   localparam bit          RegFileRdataMuxCheck  = SecureIbex;
   localparam int unsigned RegFileDataWidth      = RegFileECC ? 32 + 7 : 32;
-  localparam bit          MemECC                = SecureIbex;
-  localparam int unsigned MemDataWidth          = MemECC ? 32 + 7 : 32;
   // Icache parameters
   localparam int unsigned BusSizeECC        = ICacheECC ? (BUS_SIZE + 7) : BUS_SIZE;
   localparam int unsigned LineSizeECC       = BusSizeECC * IC_LINE_BEATS;
@@ -310,14 +311,8 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   assign data_rdata_core[31:0] = data_rdata_i;
   assign instr_rdata_core[31:0] = instr_rdata_i;
 
-  if (MemECC) begin : gen_mem_rdata_ecc
-    assign data_rdata_core[38:32] = data_rdata_intg_i;
-    assign instr_rdata_core[38:32] = instr_rdata_intg_i;
-  end else begin : gen_non_mem_rdata_ecc
-    logic unused_intg;
-
-    assign unused_intg = ^{instr_rdata_intg_i, data_rdata_intg_i};
-  end
+  logic unused_intg;
+  assign unused_intg = ^{instr_rdata_intg_i, data_rdata_intg_i};
 
   ibex_core #(
     .PMPEnable        (PMPEnable),
@@ -345,8 +340,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .DummyInstructions(DummyInstructions),
     .RegFileECC       (RegFileECC),
     .RegFileDataWidth (RegFileDataWidth),
-    .MemECC           (MemECC),
-    .MemDataWidth     (MemDataWidth),
     .DmHaltAddr       (DmHaltAddr),
     .DmExceptionAddr  (DmExceptionAddr),
     //cheri
@@ -388,7 +381,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .data_err_i,
 
     .dummy_instr_id_o (dummy_instr_id),
-    .dummy_instr_wb_o (dummy_instr_wb),
     .rf_raddr_a_o     (rf_raddr_a),
     .rf_raddr_b_o     (rf_raddr_b),
     .rf_waddr_wb_o    (rf_waddr_wb),
@@ -408,7 +400,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .ic_data_wdata_o   (ic_data_wdata),
     .ic_data_rdata_i   (ic_data_rdata),
     .ic_scr_key_valid_i(scramble_key_valid_q),
-    .ic_scr_key_req_o  (ic_scr_key_req),
 
     .irq_software_i,
     .irq_timer_i,
@@ -445,24 +436,13 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .rvfi_mem_wmask,
     .rvfi_mem_rdata,
     .rvfi_mem_wdata,
-    .rvfi_ext_pre_mip,
-    .rvfi_ext_post_mip,
     .rvfi_ext_nmi,
-    .rvfi_ext_nmi_int,
     .rvfi_ext_debug_req,
-    .rvfi_ext_debug_mode,
-    .rvfi_ext_rf_wr_suppress,
     .rvfi_ext_mcycle,
-    .rvfi_ext_mhpmcounters,
-    .rvfi_ext_mhpmcountersh,
-    .rvfi_ext_ic_scr_key_valid,
-    .rvfi_ext_irq_valid,
 `endif
 
     .fetch_enable_i        (fetch_enable_buf),
     .alert_minor_o         (core_alert_minor),
-    .alert_major_internal_o(core_alert_major_internal),
-    .alert_major_bus_o     (core_alert_major_bus),
     .core_busy_o           (core_busy_d),
 
     //cheri
@@ -477,13 +457,14 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     .rf_rcap_a_i           (rf_rcap_a),
     .rf_rcap_b_i           (rf_rcap_b),
     .rf_reg_rdy_i          (rf_reg_rdy),
-      .rf_trsv_en_o     (rf_trsv_en),
+    .rf_trsv_en_o     (rf_trsv_en),
     .rf_trsv_addr_o   (rf_trsv_addr),
     .rf_trvk_addr_o   (rf_trvk_addr),
     .rf_trvk_en_o     (rf_trvk_en    ),
     .rf_trvk_clrtag_o (rf_trvk_clrtag),
     .rf_trvk_par_o    (),
     .rf_trsv_par_o    (),
+    .data_is_cap_o    ()
   );
 
   /////////////////////////////////
@@ -721,11 +702,7 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
           .rvalid_o         (),
           .raddr_o          (),
           .rerror_o         (),
-          .cfg_i            (ram_cfg_i),
-          .wr_collision_o   (),
-          .write_pending_o  (),
-
-          .alert_o          (icache_tag_alert[way])
+          .cfg_i            (ram_cfg_i)
         );
 
         // Data RAM instantiation
@@ -758,11 +735,7 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
           .rvalid_o         (),
           .raddr_o          (),
           .rerror_o         (),
-          .cfg_i            (ram_cfg_i),
-          .wr_collision_o   (),
-          .write_pending_o  (),
-
-          .alert_o          (icache_data_alert[way])
+          .cfg_i            (ram_cfg_i)
         );
 
         `ifdef INC_ASSERT
@@ -861,14 +834,7 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
 
   assign data_wdata_o = data_wdata_core[31:0];
 
-  if (MemECC) begin : gen_mem_wdata_ecc
-    prim_buf #(.Width(7)) u_prim_buf_data_wdata_intg (
-      .in_i (data_wdata_core[38:32]),
-      .out_o(data_wdata_intg_o)
-    );
-  end else begin : gen_no_mem_ecc
-    assign data_wdata_intg_o = '0;
-  end
+  assign data_wdata_intg_o = '0;
 
   // Redundant lockstep core implementation
   if (Lockstep) begin : gen_lockstep
@@ -939,7 +905,7 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     logic                         instr_gnt_local;
     logic                         instr_rvalid_local;
     logic [31:0]                  instr_addr_local;
-    logic [MemDataWidth-1:0]      instr_rdata_local;
+    logic [31:0]      instr_rdata_local;
     logic                         instr_err_local;
 
     logic                         data_req_local;
@@ -948,8 +914,8 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
     logic                         data_we_local;
     logic [3:0]                   data_be_local;
     logic [31:0]                  data_addr_local;
-    logic [MemDataWidth-1:0]      data_wdata_local;
-    logic [MemDataWidth-1:0]      data_rdata_local;
+    logic [31:0]      data_wdata_local;
+    logic [31:0]      data_rdata_local;
     logic                         data_err_local;
 
     logic                         dummy_instr_id_local;
@@ -1141,7 +1107,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       .DummyInstructions(DummyInstructions),
       .RegFileECC       (RegFileECC),
       .RegFileDataWidth (RegFileDataWidth),
-      .MemECC           (MemECC),
       .DmHaltAddr       (DmHaltAddr),
       .DmExceptionAddr  (DmExceptionAddr),
       
@@ -1172,7 +1137,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       .data_err_i             (data_err_local),
 
       .dummy_instr_id_i       (dummy_instr_id_local),
-      .dummy_instr_wb_i       (dummy_instr_wb_local),
       .rf_raddr_a_i           (rf_raddr_a_local),
       .rf_raddr_b_i           (rf_raddr_b_local),
       .rf_waddr_wb_i          (rf_waddr_wb_local),
@@ -1192,7 +1156,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
       .ic_data_wdata_i        (ic_data_wdata_local),
       .ic_data_rdata_i        (ic_data_rdata_local),
       .ic_scr_key_valid_i     (scramble_key_valid_local),
-      .ic_scr_key_req_i       (ic_scr_key_req_local),
 
       .irq_software_i         (irq_software_local),
       .irq_timer_i            (irq_timer_local),
@@ -1207,7 +1170,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
 
       .fetch_enable_i         (fetch_enable_local),
       .alert_minor_o          (lockstep_alert_minor_local),
-      .alert_major_internal_o (lockstep_alert_major_internal_local),
       .alert_major_bus_o      (lockstep_alert_major_bus_local),
       .core_busy_i            (core_busy_local),
       .test_en_i              (test_en_i),
@@ -1245,10 +1207,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   logic icache_alert_major_internal;
   assign icache_alert_major_internal = (|icache_tag_alert) | (|icache_data_alert);
 
-  assign alert_major_internal_o = core_alert_major_internal |
-                                  lockstep_alert_major_internal |
-                                  rf_alert_major_internal |
-                                  icache_alert_major_internal;
   assign alert_major_bus_o      = core_alert_major_bus | lockstep_alert_major_bus;
   assign alert_minor_o          = core_alert_minor | lockstep_alert_minor;
 
@@ -1263,7 +1221,6 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   `ASSERT_KNOWN(IbexScrambleReqX, scramble_req_o)
   `ASSERT_KNOWN(IbexDoubleFaultSeenX, double_fault_seen_o)
   `ASSERT_KNOWN(IbexAlertMinorX, alert_minor_o)
-  `ASSERT_KNOWN(IbexAlertMajorInternalX, alert_major_internal_o)
   `ASSERT_KNOWN(IbexAlertMajorBusX, alert_major_bus_o)
   `ASSERT_KNOWN(IbexCoreSleepX, core_sleep_o)
 
@@ -1468,32 +1425,4 @@ module ibex_top import ibex_pkg::*;  import cheri_pkg::*;#(
   `ASSERT(CrashDumpExceptionAddrConn,
     crash_dump_o.exception_addr === u_ibex_core.cs_registers_i.mtval_q)
 
-  // Explicit INC_ASSERT due to instantiation of prim_secded_inv_39_32_dec below that is only used
-  // by assertions
-  `ifdef INC_ASSERT
-  if (MemECC) begin : g_mem_ecc_asserts
-    logic [1:0] data_ecc_err, instr_ecc_err;
-
-    // Check alerts from memory integrity failures
-
-    prim_secded_inv_39_32_dec u_data_intg_dec (
-      .data_i     (data_rdata_core),
-      .data_o     (),
-      .syndrome_o (),
-      .err_o      (data_ecc_err)
-    );
-    `ASSERT(MajorAlertOnDMemIntegrityErr,
-      data_rvalid_i && (|data_ecc_err) |-> ##[0:5] alert_major_bus_o)
-
-    prim_secded_inv_39_32_dec u_instr_intg_dec (
-      .data_i     (instr_rdata_core),
-      .data_o     (),
-      .syndrome_o (),
-      .err_o      (instr_ecc_err)
-    );
-    // Check alerts from memory integrity failures
-    `ASSERT(MajorAlertOnIMemIntegrityErr,
-      instr_rvalid_i && (|instr_ecc_err) |-> ##[0:5] alert_major_bus_o)
-  end
-  `endif
 endmodule

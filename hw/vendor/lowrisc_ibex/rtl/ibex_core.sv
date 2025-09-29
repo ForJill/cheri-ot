@@ -1,3 +1,7 @@
+// Copyright Microsoft Corporation
+// Licensed under the Apache License, Version 2.0, see LICENSE for details.
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright lowRISC contributors.
 // Copyright 2018 ETH Zurich and University of Bologna, see also CREDITS.md.
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
@@ -8,11 +12,13 @@
 `endif
 
 `include "prim_assert.sv"
-`include "dv_fcov_macros.svh"
 
 /**
  * Top level module of the ibex RISC-V core
  */
+
+//import cheri_pkg::*;
+
 module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   parameter bit          PMPEnable         = 1'b0,
   parameter int unsigned PMPGranularity    = 0,
@@ -39,47 +45,43 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   parameter bit          DummyInstructions = 1'b0,
   parameter bit          RegFileECC        = 1'b0,
   parameter int unsigned RegFileDataWidth  = 32,
-  parameter bit          MemECC            = 1'b0,
-  parameter int unsigned MemDataWidth      = MemECC ? 32 + 7 : 32,
   parameter int unsigned DmHaltAddr        = 32'h1A110800,
   parameter int unsigned DmExceptionAddr   = 32'h1A110808,
-
-  //cheri
-  parameter bit          CHERIoTEn         = 1'b0,
-  parameter int unsigned DataWidth         = 32, 
+  // CHERIoT paramters
+  parameter bit          CHERIoTEn         = 1'b1,
+  parameter int unsigned DataWidth         = 33,    // legal values: 32, 33, 65
   parameter int unsigned HeapBase          = 32'h2001_0000,
   parameter int unsigned TSMapBase         = 32'h2002_f000,
   parameter int unsigned TSMapSize         = 1024,
   parameter bit          MemCapFmt         = 1'b0,
-  parameter bit          CheriPPLBC        = 1'b0,
+  parameter bit          CheriPPLBC        = 1'b1,
   parameter bit          CheriSBND2        = 1'b0,
-  parameter bit          CheriTBRE         = 1'b0,
-  parameter bit          CheriStkZ         = 1'b0,
+  parameter bit          CheriTBRE         = 1'b1,
+  parameter bit          CheriStkZ         = 1'b1,
   parameter int unsigned MMRegDinW         = 128,
   parameter int unsigned MMRegDoutW        = 64,
   parameter bit          CheriCapIT8       = 1'b0
 ) (
   // Clock and Reset
   input  logic                         clk_i,
-  // Internally generated resets in ibex_lockstep cause IMPERFECTSCH warnings.
-  // TODO: Remove when upgrading Verilator #2134.
-  /* verilator lint_off IMPERFECTSCH */
   input  logic                         rst_ni,
-  /* verilator lint_on IMPERFECTSCH */
 
   input  logic [31:0]                  hart_id_i,
   input  logic [31:0]                  boot_addr_i,
+  input  logic                         cheri_pmode_i,
+  input  logic                         cheri_tsafe_en_i,
 
   // Instruction memory interface
   output logic                         instr_req_o,
   input  logic                         instr_gnt_i,
   input  logic                         instr_rvalid_i,
   output logic [31:0]                  instr_addr_o,
-  input  logic [MemDataWidth-1:0]      instr_rdata_i,
+  input  logic [31:0]                  instr_rdata_i,
   input  logic                         instr_err_i,
 
   // Data memory interface
   output logic                         data_req_o,
+  output logic                         data_is_cap_o,
   input  logic                         data_gnt_i,
   input  logic                         data_rvalid_i,
   output logic                         data_we_o,
@@ -91,14 +93,31 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // Register file interface
   output logic                         dummy_instr_id_o,
-  output logic                         dummy_instr_wb_o,
   output logic [4:0]                   rf_raddr_a_o,
   output logic [4:0]                   rf_raddr_b_o,
   output logic [4:0]                   rf_waddr_wb_o,
   output logic                         rf_we_wb_o,
   output logic [RegFileDataWidth-1:0]  rf_wdata_wb_ecc_o,
+  output reg_cap_t                     rf_wcap_wb_o,
   input  logic [RegFileDataWidth-1:0]  rf_rdata_a_ecc_i,
   input  logic [RegFileDataWidth-1:0]  rf_rdata_b_ecc_i,
+  input  reg_cap_t                     rf_rcap_a_i,
+  input  reg_cap_t                     rf_rcap_b_i,
+  input  logic [31:0]                  rf_reg_rdy_i,
+
+  output logic                         rf_trsv_en_o,
+  output logic [4:0]                   rf_trsv_addr_o,
+  output logic [6:0]                   rf_trsv_par_o,
+  output logic [4:0]                   rf_trvk_addr_o,
+  output logic                         rf_trvk_en_o,
+  output logic                         rf_trvk_clrtag_o,
+  output logic [6:0]                   rf_trvk_par_o,
+  output logic                         tsmap_cs_o,
+  output logic [15:0]                  tsmap_addr_o,
+  input  logic [31:0]                  tsmap_rdata_i,
+  input  logic [MMRegDinW-1:0]         mmreg_corein_i,
+  output logic [MMRegDoutW-1:0]        mmreg_coreout_o,
+  output logic                         cheri_fatal_err_o,
 
   // RAMs interface
   output logic [IC_NUM_WAYS-1:0]       ic_tag_req_o,
@@ -112,7 +131,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   output logic [LineSizeECC-1:0]       ic_data_wdata_o,
   input  logic [LineSizeECC-1:0]       ic_data_rdata_i [IC_NUM_WAYS],
   input  logic                         ic_scr_key_valid_i,
-  output logic                         ic_scr_key_req_o,
 
   // Interrupt inputs
   input  logic                         irq_software_i,
@@ -125,8 +143,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   // Debug Interface
   input  logic                         debug_req_i,
   output crash_dump_t                  crash_dump_o,
-  // SEC_CM: EXCEPTION.CTRL_FLOW.LOCAL_ESC
-  // SEC_CM: EXCEPTION.CTRL_FLOW.GLOBAL_ESC
   output logic                         double_fault_seen_o,
 
   // RISC-V Formal Interface
@@ -145,62 +161,38 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   output logic [ 4:0]                  rvfi_rs2_addr,
   output logic [ 4:0]                  rvfi_rs3_addr,
   output logic [31:0]                  rvfi_rs1_rdata,
+  output reg_cap_t                     rvfi_rs1_rcap,
   output logic [31:0]                  rvfi_rs2_rdata,
+  output reg_cap_t                     rvfi_rs2_rcap,
   output logic [31:0]                  rvfi_rs3_rdata,
   output logic [ 4:0]                  rvfi_rd_addr,
   output logic [31:0]                  rvfi_rd_wdata,
+  output reg_cap_t                     rvfi_rd_wcap,
   output logic [31:0]                  rvfi_pc_rdata,
   output logic [31:0]                  rvfi_pc_wdata,
+  output logic                         rvfi_mem_is_cap,
   output logic [31:0]                  rvfi_mem_addr,
   output logic [ 3:0]                  rvfi_mem_rmask,
   output logic [ 3:0]                  rvfi_mem_wmask,
   output logic [31:0]                  rvfi_mem_rdata,
+  output reg_cap_t                     rvfi_mem_rcap,
   output logic [31:0]                  rvfi_mem_wdata,
-  output logic [31:0]                  rvfi_ext_pre_mip,
-  output logic [31:0]                  rvfi_ext_post_mip,
+  output reg_cap_t                     rvfi_mem_wcap,
+  output logic [31:0]                  rvfi_ext_mip,
   output logic                         rvfi_ext_nmi,
-  output logic                         rvfi_ext_nmi_int,
   output logic                         rvfi_ext_debug_req,
-  output logic                         rvfi_ext_debug_mode,
-  output logic                         rvfi_ext_rf_wr_suppress,
   output logic [63:0]                  rvfi_ext_mcycle,
-  output logic [31:0]                  rvfi_ext_mhpmcounters [10],
-  output logic [31:0]                  rvfi_ext_mhpmcountersh [10],
-  output logic                         rvfi_ext_ic_scr_key_valid,
-  output logic                         rvfi_ext_irq_valid,
-  `endif
+`endif
 
   // CPU Control Signals
-  // SEC_CM: FETCH.CTRL.LC_GATED
-  input  ibex_mubi_t                   fetch_enable_i,
+  input  fetch_enable_t                fetch_enable_i,
   output logic                         alert_minor_o,
-  output logic                         alert_major_internal_o,
-  output logic                         alert_major_bus_o,
-  output ibex_mubi_t                   core_busy_o,
-
-  //cheri 
-  input  logic                         cheri_pmode_i,
-  input  logic                         cheri_tsafe_en_i,
-  output logic                         tsmap_cs_o,
-  output logic [15:0]                  tsmap_addr_o,
-  input  logic [31:0]                  tsmap_rdata_i,
-  input  logic [MMRegDinW-1:0]         mmreg_corein_i,
-  output logic [MMRegDoutW-1:0]        mmreg_coreout_o,
-  output reg_cap_t                     rf_wcap_wb_o,
-  input  reg_cap_t                     rf_rcap_a_i,
-  input  reg_cap_t                     rf_rcap_b_i,
-  input  logic [31:0]                  rf_reg_rdy_i,
-  output logic                         rf_trsv_en_o,
-  output logic [4:0]                   rf_trsv_addr_o,
-  output logic [6:0]                   rf_trsv_par_o,
-  output logic [4:0]                   rf_trvk_addr_o,
-  output logic                         rf_trvk_en_o,
-  output logic                         rf_trvk_clrtag_o,
-  output logic [6:0]                   rf_trvk_par_o,
+  output logic                         alert_major_o,
+  output logic                         icache_inval_o,
+  output logic                         core_busy_o
 );
 
-  localparam int unsigned PMPNumChan      = 3;
-  // SEC_CM: CORE.DATA_REG_SW.SCA
+  localparam int unsigned PMP_NUM_CHAN      = 3;
   localparam bit          DataIndTiming     = SecureIbex;
   localparam bit          PCIncrCheck       = SecureIbex;
   localparam bit          ShadowCSR         = 1'b0;
@@ -208,6 +200,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   // IF/ID signals
   logic        dummy_instr_id;
   logic        instr_valid_id;
+  logic        instr_executing_id;
   logic        instr_new_id;
   logic [31:0] instr_rdata_id;                 // Instruction sampled inside IF stage
   logic [31:0] instr_rdata_alu_id;             // Instruction sampled inside IF stage (replicated to
@@ -218,7 +211,10 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic        instr_bp_taken_id;
   logic        instr_fetch_err;                // Bus error on instr fetch
   logic        instr_fetch_err_plus2;          // Instruction error is misaligned
+  logic        instr_fetch_cheri_acc_vio;         
+  logic        instr_fetch_cheri_bound_vio;         
   logic        illegal_c_insn_id;              // Illegal compressed instruction sent to ID stage
+
   logic [31:0] pc_if;                          // Program counter in IF stage
   logic [31:0] pc_id;                          // Program counter in ID stage
   logic [31:0] pc_wb;                          // Program counter in WB stage
@@ -233,7 +229,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic [31:0] dummy_instr_seed;
   logic        icache_enable;
   logic        icache_inval;
-  logic        icache_ecc_error;
   logic        pc_mismatch_alert;
   logic        csr_shadow_err;
 
@@ -244,22 +239,20 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic [31:0] nt_branch_addr;
   pc_sel_e     pc_mux_id;                      // Mux selector for next PC
   exc_pc_sel_e exc_pc_mux_id;                  // Mux selector for exception PC
-  exc_cause_t  exc_cause;                      // Exception cause
+  exc_cause_e  exc_cause;                      // Exception cause
 
-  logic        instr_intg_err;
-  logic        lsu_load_err, lsu_load_err_raw;
-  logic        lsu_store_err, lsu_store_err_raw;
-  logic        lsu_load_resp_intg_err;
-  logic        lsu_store_resp_intg_err;
-
-  logic        expecting_load_resp_id;
-  logic        expecting_store_resp_id;
+  logic        lsu_load_err;
+  logic        lsu_store_err;
+  logic        lsu_err_is_cheri;
 
   // LSU signals
   logic        lsu_addr_incr_req;
   logic [31:0] lsu_addr_last;
+  logic [31:0] cpu_lsu_addr;
 
   // Jump and branch target and decision (EX->IF)
+  logic [31:0] branch_target_ex_rv32;
+  logic [31:0] branch_target_ex_cheri;
   logic [31:0] branch_target_ex;
   logic        branch_decision;
 
@@ -267,6 +260,8 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic        ctrl_busy;
   logic        if_busy;
   logic        lsu_busy;
+
+  logic        lsu_busy_tbre;
 
   // Register File
   logic [4:0]  rf_raddr_a;
@@ -277,10 +272,17 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic        rf_ren_b;
   logic [4:0]  rf_waddr_wb;
   logic [31:0] rf_wdata_wb;
+
+  reg_cap_t    rf_wcap_wb;
+
   // Writeback register write data that can be used on the forwarding path (doesn't factor in memory
   // read data as this is too late for the forwarding path)
   logic [31:0] rf_wdata_fwd_wb;
+
+  reg_cap_t    rf_wcap_fwd_wb;
+
   logic [31:0] rf_wdata_lsu;
+  reg_cap_t    rf_wcap_lsu;
   logic        rf_we_wb;
   logic        rf_we_lsu;
   logic        rf_ecc_err_comb;
@@ -325,12 +327,12 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
                                        // or missing write permissions
 
   // Data Memory Control
-  logic        lsu_we;
-  logic [1:0]  lsu_type;
-  logic        lsu_sign_ext;
-  logic        lsu_req;
-  logic        lsu_rdata_valid;
-  logic [31:0] lsu_wdata;
+  logic        cpu_lsu_we;
+  logic [1:0]  cpu_lsu_type;
+  logic        cpu_lsu_sign_ext;
+  logic        cpu_lsu_req;
+  logic [31:0] cpu_lsu_wdata;
+  reg_cap_t    cpu_lsu_wcap;
   logic        lsu_req_done;
 
   // stall control
@@ -343,7 +345,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   // Signals between instruction core interface and pipe (if and id stages)
   logic        instr_req_int;          // Id stage asserts a req to instruction core interface
   logic        instr_req_gated;
-  logic        instr_exec;
 
   // Writeback stage
   logic           en_wb;
@@ -352,7 +353,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic           rf_write_wb;
   logic           outstanding_load_wb;
   logic           outstanding_store_wb;
-  logic           dummy_instr_wb;
 
   // Interrupts
   logic        nmi_mode;
@@ -364,7 +364,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic [33:0]  csr_pmp_addr [PMPNumRegions];
   pmp_cfg_t     csr_pmp_cfg  [PMPNumRegions];
   pmp_mseccfg_t csr_pmp_mseccfg;
-  logic         pmp_req_err  [PMPNumChan];
+  logic         pmp_req_err  [PMP_NUM_CHAN];
   logic         data_req_out;
 
   logic        csr_save_if;
@@ -373,6 +373,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic        csr_restore_mret_id;
   logic        csr_restore_dret_id;
   logic        csr_save_cause;
+  logic        csr_mepcc_clrtag;
   logic        csr_mtvec_init;
   logic [31:0] csr_mtvec;
   logic [31:0] csr_mtval;
@@ -411,12 +412,9 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // for RVFI
   logic        illegal_insn_id, unused_illegal_insn_id; // ID stage sees an illegal instruction
-  
-  //cheri
-  logic [31:0] branch_target_ex_rv32;
-  logic [31:0] branch_target_ex_cheri;
-  logic          csr_mepcc_clrtag;
-  pcc_cap_t      pcc_cap_r, pcc_cap_w;
+
+  pcc_cap_t     pcc_cap_r, pcc_cap_w;
+
   logic          cheri_branch_req;
   logic          cheri_branch_req_spec;
   logic          instr_is_cheri_id;
@@ -496,39 +494,15 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic          rf_trsv_en;
 
   logic          cpu_stall_by_stkz, cpu_grant_to_stkz;
-  logic          instr_fetch_cheri_acc_vio;         
-  logic          instr_fetch_cheri_bound_vio;    
+
+
   //////////////////////
   // Clock management //
   //////////////////////
 
   // Before going to sleep, wait for I- and D-side
   // interfaces to finish ongoing operations.
-  if (SecureIbex) begin : g_core_busy_secure
-    // For secure Ibex, the individual bits of core_busy_o are generated from different copies of
-    // the various busy signal.
-    localparam int unsigned NumBusySignals = 3;
-    localparam int unsigned NumBusyBits = $bits(ibex_mubi_t) * NumBusySignals;
-    logic [NumBusyBits-1:0] busy_bits_buf;
-    prim_buf #(
-      .Width(NumBusyBits)
-    ) u_fetch_enable_buf (
-      .in_i ({$bits(ibex_mubi_t){ctrl_busy, if_busy, lsu_busy}}),
-      .out_o(busy_bits_buf)
-    );
-
-    // Set core_busy_o to IbexMuBiOn if even a single input is high.
-    for (genvar i = 0; i < $bits(ibex_mubi_t); i++) begin : g_core_busy_bits
-      if (IbexMuBiOn[i] == 1'b1) begin : g_pos
-        assign core_busy_o[i] =  |busy_bits_buf[i*NumBusySignals +: NumBusySignals];
-      end else begin : g_neg
-        assign core_busy_o[i] = ~|busy_bits_buf[i*NumBusySignals +: NumBusySignals];
-      end
-    end
-  end else begin : g_core_busy_non_secure
-    // For non secure Ibex, synthesis is allowed to optimize core_busy_o.
-    assign core_busy_o = (ctrl_busy || if_busy || lsu_busy) ? IbexMuBiOn : IbexMuBiOff;
-  end
+  assign core_busy_o = ctrl_busy | if_busy | lsu_busy;
 
   //////////////
   // IF stage //
@@ -544,29 +518,27 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .TagSizeECC       (TagSizeECC),
     .LineSizeECC      (LineSizeECC),
     .PCIncrCheck      (PCIncrCheck),
-    .ResetAll         (ResetAll),
-    .RndCnstLfsrSeed  (RndCnstLfsrSeed),
-    .RndCnstLfsrPerm  (RndCnstLfsrPerm),
+    .ResetAll         (ResetAll          ),
+    .RndCnstLfsrSeed  (RndCnstLfsrSeed   ),
+    .RndCnstLfsrPerm  (RndCnstLfsrPerm   ),
     .BranchPredictor  (BranchPredictor),
-    .MemECC           (MemECC),
-    .MemDataWidth     (MemDataWidth),
-    //cheri
     .CHERIoTEn        (CHERIoTEn)
   ) if_stage_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
 
-    .boot_addr_i(boot_addr_i),
-    .req_i      (instr_req_gated),  // instruction request control
+    .cheri_pmode_i  (cheri_pmode_i),
+    .boot_addr_i    (boot_addr_i),
+    .req_i          (instr_req_gated),  // instruction request control
+    .debug_mode_i   (debug_mode),
 
     // instruction cache interface
-    .instr_req_o       (instr_req_o),
-    .instr_addr_o      (instr_addr_o),
-    .instr_gnt_i       (instr_gnt_i),
-    .instr_rvalid_i    (instr_rvalid_i),
-    .instr_rdata_i     (instr_rdata_i),
-    .instr_bus_err_i   (instr_err_i),
-    .instr_intg_err_o  (instr_intg_err),
+    .instr_req_o    (instr_req_o),
+    .instr_addr_o   (instr_addr_o),
+    .instr_gnt_i    (instr_gnt_i),
+    .instr_rvalid_i (instr_rvalid_i),
+    .instr_rdata_i  (instr_rdata_i),
+    .instr_err_i    (instr_err_i),
 
     .ic_tag_req_o      (ic_tag_req_o),
     .ic_tag_write_o    (ic_tag_write_o),
@@ -579,7 +551,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .ic_data_wdata_o   (ic_data_wdata_o),
     .ic_data_rdata_i   (ic_data_rdata_i),
     .ic_scr_key_valid_i(ic_scr_key_valid_i),
-    .ic_scr_key_req_o  (ic_scr_key_req_o),
 
     // outputs to ID stage
     .instr_valid_id_o        (instr_valid_id),
@@ -591,6 +562,9 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .instr_bp_taken_o        (instr_bp_taken_id),
     .instr_fetch_err_o       (instr_fetch_err),
     .instr_fetch_err_plus2_o (instr_fetch_err_plus2),
+    .instr_fetch_cheri_acc_vio_o   (instr_fetch_cheri_acc_vio),       
+    .instr_fetch_cheri_bound_vio_o (instr_fetch_cheri_bound_vio),       
+
     .illegal_c_insn_id_o     (illegal_c_insn_id),
     .dummy_instr_id_o        (dummy_instr_id),
     .pc_if_o                 (pc_if),
@@ -611,7 +585,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .dummy_instr_seed_i    (dummy_instr_seed),
     .icache_enable_i       (icache_enable),
     .icache_inval_i        (icache_inval),
-    .icache_ecc_error_o    (icache_ecc_error),
 
     // branch targets
     .branch_target_ex_i(branch_target_ex),
@@ -628,13 +601,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
     .pc_mismatch_alert_o(pc_mismatch_alert),
     .if_busy_o          (if_busy),
-
-    //cheri
-    .debug_mode_i         (debug_mode),
-    .cheri_pmode_i  (cheri_pmode_i),
-    .pcc_cap_i          (pcc_cap_r),
-    .instr_fetch_cheri_acc_vio_o   (instr_fetch_cheri_acc_vio),       
-    .instr_fetch_cheri_bound_vio_o (instr_fetch_cheri_bound_vio)
+    .pcc_cap_i          (pcc_cap_r)
   );
 
   // Core is waiting for the ISide when ID/EX stage is ready for a new instruction but none are
@@ -643,24 +610,22 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // Multi-bit fetch enable used when SecureIbex == 1. When SecureIbex == 0 only use the bottom-bit
   // of fetch_enable_i. Ensure the multi-bit encoding has the bottom bit set for on and unset for
-  // off so IbexMuBiOn/IbexMuBiOff can be used without needing to know the value of SecureIbex.
-  `ASSERT_INIT(IbexMuBiSecureOnBottomBitSet,    IbexMuBiOn[0] == 1'b1)
-  `ASSERT_INIT(IbexMuBiSecureOffBottomBitClear, IbexMuBiOff[0] == 1'b0)
+  // off so FetchEnableOn/FetchEnableOff can be used without needing to know the value of
+  // SecureIbex.
+  `ASSERT_INIT(FetchEnableSecureOnBottomBitSet,    FetchEnableOn[0] == 1'b1)
+  `ASSERT_INIT(FetchEnableSecureOffBottomBitClear, FetchEnableOff[0] == 1'b0)
 
   // fetch_enable_i can be used to stop the core fetching new instructions
   if (SecureIbex) begin : g_instr_req_gated_secure
     // For secure Ibex fetch_enable_i must be a specific multi-bit pattern to enable instruction
     // fetch
-    // SEC_CM: FETCH.CTRL.LC_GATED
-    assign instr_req_gated = instr_req_int & (fetch_enable_i == IbexMuBiOn);
-    assign instr_exec      = fetch_enable_i == IbexMuBiOn;
+    assign instr_req_gated = instr_req_int & (fetch_enable_i == FetchEnableOn);
   end else begin : g_instr_req_gated_non_secure
     // For non secure Ibex only the bottom bit of fetch enable is considered
     logic unused_fetch_enable;
-    assign unused_fetch_enable = ^fetch_enable_i[$bits(ibex_mubi_t)-1:1];
+    assign unused_fetch_enable = ^fetch_enable_i[$bits(fetch_enable_t)-1:1];
 
     assign instr_req_gated = instr_req_int & fetch_enable_i[0];
-    assign instr_exec      = fetch_enable_i[0];
   end
 
   //////////////
@@ -675,14 +640,15 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .DataIndTiming  (DataIndTiming),
     .WritebackStage (WritebackStage),
     .BranchPredictor(BranchPredictor),
-    .MemECC         (MemECC),
-    //cheri
     .CHERIoTEn      (CHERIoTEn),
     .CheriPPLBC     (CheriPPLBC),
     .CheriSBND2     (CheriSBND2)
   ) id_stage_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
+
+    .cheri_pmode_i        (cheri_pmode_i),
+    .cheri_tsafe_en_i     (cheri_tsafe_en_i),
 
     // Processor Enable
     .ctrl_busy_o   (ctrl_busy),
@@ -714,6 +680,9 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
     .instr_fetch_err_i      (instr_fetch_err),
     .instr_fetch_err_plus2_i(instr_fetch_err_plus2),
+    .instr_fetch_cheri_acc_vio_i  (instr_fetch_cheri_acc_vio),       
+    .instr_fetch_cheri_bound_vio_i (instr_fetch_cheri_bound_vio),       
+
     .illegal_c_insn_i       (illegal_c_insn_id),
 
     .pc_id_i(pc_id),
@@ -753,30 +722,28 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .csr_restore_mret_id_o(csr_restore_mret_id),  // restore mstatus upon MRET
     .csr_restore_dret_id_o(csr_restore_dret_id),  // restore mstatus upon MRET
     .csr_save_cause_o     (csr_save_cause),
+    .csr_mepcc_clrtag_o   (csr_mepcc_clrtag),
     .csr_mtval_o          (csr_mtval),
     .priv_mode_i          (priv_mode_id),
     .csr_mstatus_tw_i     (csr_mstatus_tw),
     .illegal_csr_insn_i   (illegal_csr_insn_id),
     .data_ind_timing_i    (data_ind_timing),
+    .csr_pcc_perm_sr_i    (pcc_cap_r.perms[PERM_SR]),
 
     // LSU
-    .lsu_req_o     (lsu_req),  // to load store unit
-    .lsu_we_o      (lsu_we),  // to load store unit
-    .lsu_type_o    (lsu_type),  // to load store unit
-    .lsu_sign_ext_o(lsu_sign_ext),  // to load store unit
-    .lsu_wdata_o   (lsu_wdata),  // to load store unit
-    .lsu_req_done_i(lsu_req_done),  // from load store unit
+    .lsu_req_o        (rv32_lsu_req),  // to load store unit
+    .lsu_we_o         (rv32_lsu_we),  // to load store unit
+    .lsu_type_o       (rv32_lsu_type),  // to load store unit
+    .lsu_sign_ext_o   (rv32_lsu_sign_ext),  // to load store unit
+    .lsu_wdata_o      (rv32_lsu_wdata),  // to load store unit
+    .lsu_req_done_i   (lsu_req_done),  // from load store unit
 
-    .lsu_addr_incr_req_i(lsu_addr_incr_req),
-    .lsu_addr_last_i    (lsu_addr_last),
+    .lsu_addr_incr_req_i(rv32_lsu_addr_incr_req),
+    .lsu_addr_last_i    (rv32_lsu_addr_last),
 
-    .lsu_load_err_i           (lsu_load_err),
-    .lsu_load_resp_intg_err_i (lsu_load_resp_intg_err),
-    .lsu_store_err_i          (lsu_store_err),
-    .lsu_store_resp_intg_err_i(lsu_store_resp_intg_err),
-
-    .expecting_load_resp_o (expecting_load_resp_id),
-    .expecting_store_resp_o(expecting_store_resp_id),
+    .lsu_load_err_i (lsu_load_err),
+    .lsu_store_err_i(lsu_store_err),
+    .lsu_err_is_cheri_i(lsu_err_is_cheri),
 
     // Interrupt Signals
     .csr_mstatus_mie_i(csr_mstatus_mie),
@@ -833,12 +800,6 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .perf_div_wait_o  (perf_div_wait),
     .instr_id_done_o  (instr_id_done),
 
-    //cheri
-    .cheri_pmode_i        (cheri_pmode_i),
-    .cheri_tsafe_en_i     (cheri_tsafe_en_i),
-    .csr_mepcc_clrtag_o   (csr_mepcc_clrtag),
-    .csr_pcc_perm_sr_i    (pcc_cap_r.perms[PERM_SR]),
-    .lsu_err_is_cheri_i   (lsu_err_is_cheri),
     .cheri_exec_id_o       (cheri_exec_id),
     .instr_is_cheri_id_o   (instr_is_cheri_id),
     .instr_is_rv32lsu_id_o (instr_is_rv32lsu_id),
@@ -858,6 +819,8 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .cheri_branch_target_i (branch_target_ex_cheri)
   );
 
+
+  assign icache_inval_o = icache_inval;
   // for RVFI only
   assign unused_illegal_insn_id = illegal_insn_id;
 
@@ -900,13 +863,13 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .alu_adder_result_ex_o(alu_adder_result_ex),  // to LSU
     .result_ex_o          (result_ex),  // to ID
 
-    .branch_target_o  (branch_target_ex),  // to IF
+    .branch_target_o  (branch_target_ex_rv32),  // to IF
     .branch_decision_o(branch_decision),  // to ID
 
     .ex_valid_o(ex_valid)
   );
 
-//////////////
+  //////////////
   // cheri EX //
   //////////////
   if (CHERIoTEn) begin : g_cheri_ex
@@ -1062,75 +1025,188 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     assign csr_mshwm_new          = 1'b0;
  
   end
-  
+
+  /////////////////////////////
+  // cheri TS pipeline stage //
+  /////////////////////////////
+
+  if (CHERIoTEn & CheriPPLBC) begin : g_trvk_stage
+    cheri_trvk_stage #(
+      .HeapBase  (HeapBase),
+      .TSMapSize (TSMapSize)
+    ) cheri_trvk_stage_i (
+     // Clock and Reset
+    .clk_i             (clk_i           ),
+    .rst_ni            (rst_ni          ),
+    .rf_trsv_en_i      (rf_trsv_en      ),
+    .rf_trsv_addr_i    (rf_trsv_addr_o  ),
+    .lsu_resp_valid_i  (lsu_resp_valid  ),
+    .lsu_load_err_i    (lsu_load_err    ),
+    .rf_wdata_lsu_i    (rf_wdata_lsu    ),
+    .rf_wcap_lsu_i     (rf_wcap_lsu     ),
+    .lsu_resp_is_wr_i  (lsu_resp_is_wr),
+    .lsu_tbre_resp_valid_i (lsu_tbre_resp_valid),
+    .lsu_tbre_resp_err_i   (lsu_tbre_resp_err),
+    .rf_trvk_addr_o    (rf_trvk_addr_o  ),
+    .rf_trvk_en_o      (rf_trvk_en_o    ),
+    .rf_trvk_clrtag_o  (rf_trvk_clrtag_o),
+    .tbre_trvk_en_o    (tbre_trvk_en    ),
+    .tbre_trvk_clrtag_o(tbre_trvk_clrtag),          
+    .tsmap_cs_o        (tsmap_cs_o      ),
+    .tsmap_addr_o      (tsmap_addr_o    ),
+    .tsmap_rdata_i     (tsmap_rdata_i   )
+    );
+  end else begin
+    assign rf_trvk_addr_o   = 0;
+    assign rf_trvk_en_o     = 1'b0;
+    assign rf_trvk_clrtag_o = 1'b0;
+    assign tsmap_cs_o       = 1'b0;
+    assign tsmap_addr_o     = 0;
+  end
+
+  //////////////////////////////////////////
+  // cheri TS background revocation engine//
+  //////////////////////////////////////////
+
+  logic snoop_lsu_req_done;
+  logic unmasked_intr;
+
+  assign snoop_lsu_req_done = lsu_req_done;
+  assign unmasked_intr = irq_pending_o & csr_mstatus_mie;
+
+  cheri_tbre_wrapper #(
+    .CHERIoTEn   (CHERIoTEn),
+    .CheriTBRE   (CheriTBRE),
+    .CheriStkZ   (CheriStkZ),
+    .MMRegDinW   (MMRegDinW),
+    .MMRegDoutW  (MMRegDoutW),
+    .DataWidth   (DataWidth)
+  ) cheri_tbre_wrapper_i (
+   // Clock and Reset
+    .clk_i                   (clk_i),                 
+    .rst_ni                  (rst_ni),
+    .mmreg_corein_i          (mmreg_corein_i),
+    .mmreg_coreout_o         (mmreg_coreout_o),
+    .lsu_tbre_resp_valid_i   (lsu_tbre_resp_valid),
+    .lsu_tbre_resp_err_i     (lsu_tbre_resp_err),
+    .lsu_tbre_resp_is_wr_i   (lsu_resp_is_wr),
+    .lsu_tbre_raw_rdata_i    (lsu_tbre_raw_rdata),   
+    .lsu_tbre_req_done_i     (lsu_tbre_req_done),   
+    .lsu_tbre_addr_incr_i    (lsu_tbre_addr_incr),
+    .lsu_tbre_sel_i          (lsu_tbre_sel),
+    .tbre_lsu_req_o          (tbre_lsu_req),
+    .tbre_lsu_is_cap_o       (tbre_lsu_is_cap),
+    .tbre_lsu_we_o           (tbre_lsu_we),
+    .tbre_lsu_addr_o         (tbre_lsu_addr),
+    .tbre_lsu_raw_wdata_o    (tbre_lsu_raw_wdata),
+    .snoop_lsu_req_done_i    (snoop_lsu_req_done),  
+    .snoop_lsu_req_i         (cpu_lsu_req),
+    .snoop_lsu_is_cap_i      (cpu_lsu_is_cap),
+    .snoop_lsu_we_i          (cpu_lsu_we),
+    .snoop_lsu_cheri_err_i   (cpu_lsu_cheri_err),
+    .snoop_lsu_addr_i        (cpu_lsu_addr),
+    .trvk_en_i               (tbre_trvk_en),
+    .trvk_clrtag_i           (tbre_trvk_clrtag),
+    .ztop_wr_i               (ztop_wr),  
+    .ztop_wdata_i            (ztop_wdata),
+    .ztop_wfcap_i            (ztop_wfcap),
+    .ztop_rdata_o            (ztop_rdata),
+    .ztop_rcap_o             (ztop_rcap),
+    .unmasked_intr_i         (unmasked_intr),
+    .stkz_active_o           (stkz_active),
+    .stkz_abort_o            (stkz_abort),
+    .stkz_ptr_o              (stkz_ptr),
+    .stkz_base_o             (stkz_base)          
+  ) ;
+   
+   
   /////////////////////
   // Load/store unit //
   /////////////////////
+
 
   assign data_req_o   = data_req_out & ~pmp_req_err[PMP_D];
   assign lsu_resp_err = lsu_load_err | lsu_store_err;
 
   ibex_load_store_unit #(
-    .MemECC(MemECC),
-    .MemDataWidth(MemDataWidth),
-    //cheri
-    .CHERIoTEn(CHERIoTEn),
     .DataWidth(DataWidth),
+    .CHERIoTEn(CHERIoTEn),
     .MemCapFmt(MemCapFmt),
     .CheriTBRE(CheriTBRE),
     .CheriCapIT8(CheriCapIT8)
-  ) load_store_unit_i (
+    ) load_store_unit_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
 
+    .cheri_pmode_i (cheri_pmode_i),
     // data interface
     .data_req_o    (data_req_out),
+    .data_is_cap_o (data_is_cap_o),
     .data_gnt_i    (data_gnt_i),
     .data_rvalid_i (data_rvalid_i),
-    .data_bus_err_i(data_err_i),
+    .data_err_i    (data_err_i),
     .data_pmp_err_i(pmp_req_err[PMP_D]),
 
-    .data_addr_o      (data_addr_o),
-    .data_we_o        (data_we_o),
-    .data_be_o        (data_be_o),
-    .data_wdata_o     (data_wdata_o),
-    .data_rdata_i     (data_rdata_i),
+    .data_addr_o (data_addr_o),
+    .data_we_o   (data_we_o),
+    .data_be_o   (data_be_o),
+    .data_wdata_o(data_wdata_o),
+    .data_rdata_i(data_rdata_i),
 
     // signals to/from ID/EX stage
-    .lsu_we_i      (lsu_we),
-    .lsu_type_i    (lsu_type),
-    .lsu_wdata_i   (lsu_wdata),
-    .lsu_sign_ext_i(lsu_sign_ext),
+    .cpu_lsu_we_i         (cpu_lsu_we), 
+    .cpu_lsu_type_i       (cpu_lsu_type),
+    .cpu_lsu_wdata_i      (cpu_lsu_wdata),
+    .cpu_lsu_wcap_i       (cpu_lsu_wcap),
+    .cpu_lsu_sign_ext_i   (cpu_lsu_sign_ext),
+    .cpu_stall_by_stkz_i  (cpu_stall_by_stkz),
+    .cpu_grant_to_stkz_i  (cpu_grant_to_stkz),
 
     .lsu_rdata_o      (rf_wdata_lsu),
-    .lsu_rdata_valid_o(lsu_rdata_valid),
-    .lsu_req_i        (lsu_req),
-    .lsu_req_done_o   (lsu_req_done),
+    .lsu_rcap_o       (rf_wcap_lsu),
+    .lsu_rdata_valid_o(rf_we_lsu),
+    .cpu_lsu_req_i        (cpu_lsu_req),
+    .cpu_lsu_is_cap_i     (cpu_lsu_is_cap),
+    .cpu_lsu_lc_clrperm_i (cpu_lsu_lc_clrperm),
+    .cpu_lsu_cheri_err_i  (cpu_lsu_cheri_err),
+    .cpu_lsu_addr_i       (cpu_lsu_addr),
 
-    .adder_result_ex_i(alu_adder_result_ex),
-
-    .addr_incr_req_o(lsu_addr_incr_req),
+    .lsu_addr_incr_req_o(lsu_addr_incr_req),
     .addr_last_o    (lsu_addr_last),
 
+    .lsu_req_done_o      (lsu_req_done),
+    .lsu_resp_valid_o (lsu_resp_valid),
+    .lsu_resp_is_wr_o      (lsu_resp_is_wr),    
 
-    .lsu_resp_valid_o(lsu_resp_valid),
+    .tbre_lsu_req_i        (tbre_lsu_req),
+    .cpu_lsu_dec_i         (cpu_lsu_dec),
+    .lsu_tbre_sel_o        (lsu_tbre_sel),
+    .tbre_lsu_is_cap_i     (tbre_lsu_is_cap),
+    .tbre_lsu_we_i         (tbre_lsu_we),
+    .tbre_lsu_addr_i       (tbre_lsu_addr),
+    .tbre_lsu_raw_wdata_i  (tbre_lsu_raw_wdata),
+    .lsu_tbre_raw_rdata_o  (lsu_tbre_raw_rdata),
+    .lsu_tbre_req_done_o   (lsu_tbre_req_done),
+    .lsu_tbre_resp_valid_o (lsu_tbre_resp_valid),
+    .lsu_tbre_resp_err_o   (lsu_tbre_resp_err),
+    .lsu_tbre_addr_incr_req_o(lsu_tbre_addr_incr),
 
     // exception signals
-    .load_err_o           (lsu_load_err_raw),
-    .load_resp_intg_err_o (lsu_load_resp_intg_err),
-    .store_err_o          (lsu_store_err_raw),
-    .store_resp_intg_err_o(lsu_store_resp_intg_err),
+    .load_err_o (lsu_load_err),
+    .store_err_o(lsu_store_err),
+    .lsu_err_is_cheri_o(lsu_err_is_cheri),
 
     .busy_o(lsu_busy),
+
+    .busy_tbre_o(lsu_busy_tbre),
 
     .perf_load_o (perf_load),
     .perf_store_o(perf_store)
   );
 
   ibex_wb_stage #(
-    .ResetAll         (ResetAll),
-    .WritebackStage   (WritebackStage),
-    .DummyInstructions(DummyInstructions)
+    .ResetAll       ( ResetAll       ),
+    .WritebackStage(WritebackStage)
   ) wb_stage_i (
     .clk_i                   (clk_i),
     .rst_ni                  (rst_ni),
@@ -1139,6 +1215,9 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .pc_id_i                 (pc_id),
     .instr_is_compressed_id_i(instr_is_compressed_id),
     .instr_perf_count_id_i   (instr_perf_count_id),
+    .instr_is_cheri_i        (instr_is_cheri_id),
+    .cheri_load_i            (cheri_load_id),
+    .cheri_store_i           (cheri_store_id),
 
     .ready_wb_o                         (ready_wb),
     .rf_write_wb_o                      (rf_write_wb),
@@ -1154,18 +1233,21 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .rf_wdata_id_i(rf_wdata_id),
     .rf_we_id_i   (rf_we_id),
 
-    .dummy_instr_id_i(dummy_instr_id),
+    .cheri_rf_we_i    (cheri_rf_we),
+    .cheri_rf_wdata_i (cheri_result_data),
+    .cheri_rf_wcap_i  (cheri_result_cap),
 
     .rf_wdata_lsu_i(rf_wdata_lsu),
+    .rf_wcap_lsu_i(rf_wcap_lsu),
     .rf_we_lsu_i   (rf_we_lsu),
 
     .rf_wdata_fwd_wb_o(rf_wdata_fwd_wb),
+    .rf_wcap_fwd_wb_o (rf_wcap_fwd_wb),
 
     .rf_waddr_wb_o(rf_waddr_wb),
     .rf_wdata_wb_o(rf_wdata_wb),
+    .rf_wcap_wb_o (rf_wcap_wb),
     .rf_we_wb_o   (rf_we_wb),
-
-    .dummy_instr_wb_o(dummy_instr_wb),
 
     .lsu_resp_valid_i(lsu_resp_valid),
     .lsu_resp_err_i  (lsu_resp_err),
@@ -1173,42 +1255,88 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .instr_done_wb_o(instr_done_wb)
   );
 
-  if (SecureIbex) begin : g_check_mem_response
-    // For secure configurations only process load/store responses if we're expecting them to guard
-    // against false responses being injected on to the bus
-    assign lsu_load_err  = lsu_load_err_raw  & (outstanding_load_wb  | expecting_load_resp_id);
-    assign lsu_store_err = lsu_store_err_raw & (outstanding_store_wb | expecting_store_resp_id);
-    assign rf_we_lsu     = lsu_rdata_valid   & (outstanding_load_wb  | expecting_load_resp_id);
-  end else begin : g_no_check_mem_response
-    // For non-secure configurations trust the bus protocol is being followed and we'll only ever
-    // see a response if we have an outstanding request.
-    assign lsu_load_err  = lsu_load_err_raw;
-    assign lsu_store_err = lsu_store_err_raw;
-    assign rf_we_lsu     = lsu_rdata_valid;
-
-    // expected_load_resp_id/expected_store_resp_id signals are only used to guard against false
-    // responses so they are unused in non-secure configurations
-    logic unused_expecting_load_resp_id;
-    logic unused_expecting_store_resp_id;
-
-    assign unused_expecting_load_resp_id  = expecting_load_resp_id;
-    assign unused_expecting_store_resp_id = expecting_store_resp_id;
-  end
-
   /////////////////////////////
   // Register file interface //
   /////////////////////////////
 
   assign dummy_instr_id_o = dummy_instr_id;
-  assign dummy_instr_wb_o = dummy_instr_wb;
   assign rf_raddr_a_o     = rf_raddr_a;
   assign rf_waddr_wb_o    = rf_waddr_wb;
   assign rf_we_wb_o       = rf_we_wb;
   assign rf_raddr_b_o     = rf_raddr_b;
 
-  if (RegFileECC) begin : gen_regfile_ecc
+  assign rf_wcap_wb_o = rf_wcap_wb;
 
-    // SEC_CM: DATA_REG_SW.INTEGRITY
+  if (RegFileECC & CHERIoTEn) begin : gen_ecc_cheriot
+    logic [37:0] rf_wcap_vec, rf_rcap_a_vec, rf_rcap_b_vec;
+    logic  [1:0] rf_ecc_err_a, rf_ecc_err_b;
+    logic        rf_ecc_err_a_id, rf_ecc_err_b_id;
+    logic [31:0] wdata_tmp, rdata_a_tmp, rdata_b_tmp;
+    logic [31:0] unused_sig32_0, unused_sig32_1;
+    logic [38:0] wdata_ecc_tmp;
+
+    assign rf_wcap_vec  = reg2vec(rf_wcap_wb);
+
+    // ECC checkbit generation
+    // -- for simplicity just linearly add the parity bits together.
+    //    this is not as good as the full secded implementation (some double errors won't be detected)
+    //    but probably ok for protection against random fault injection
+
+    // include waddr and we in the ECC calculation
+    assign wdata_tmp    = rf_wdata_wb ^ rf_wcap_vec[31:0] ^ {20'h0, rf_we_wb, rf_waddr_wb, rf_wcap_vec[37:32]};
+    // assign wdata_tmp         = rf_wdata_wb ^ rf_wcap_vec[31:0] ^ {26'h0, rf_wcap_vec[37:32]};
+    assign rf_wdata_wb_ecc_o = {wdata_ecc_tmp[38:32], rf_wdata_wb};
+    prim_secded_inv_39_32_enc regfile_ecc_enc (
+      .data_i(wdata_tmp),
+      .data_o(wdata_ecc_tmp)
+    );
+
+    // generate parity bits for the TRSV/TRVK interface
+    prim_secded_inv_39_32_enc trsv_ecc_enc (
+      .data_i({26'h0, rf_trsv_en_o, rf_trsv_addr_o}),
+      .data_o({rf_trsv_par_o, unused_sig32_0})
+    );
+    
+    prim_secded_inv_39_32_enc trvk_ecc_enc (
+      .data_i({25'h0, rf_trvk_en_o, rf_trvk_clrtag_o, rf_trvk_addr_o}),
+      .data_o({rf_trvk_par_o, unused_sig32_1})
+    );
+
+    // ECC checking on register file rdata
+    assign rf_rcap_a_vec = reg2vec(rf_rcap_a_i);
+    assign rf_rcap_b_vec = reg2vec(rf_rcap_b_i);
+
+    assign rdata_a_tmp = rf_rdata_a_ecc_i[31:0] ^ rf_rcap_a_vec[31:0] ^ {20'h0, 1'b1, rf_raddr_a, rf_rcap_a_vec[37:32]};
+    assign rdata_b_tmp = rf_rdata_b_ecc_i[31:0] ^ rf_rcap_b_vec[31:0] ^ {20'h0, 1'b1, rf_raddr_b, rf_rcap_b_vec[37:32]};
+    
+    //assign rdata_a_tmp = rf_rdata_a_ecc_i[31:0] ^ rf_rcap_a_vec[31:0] ^ {26'h0, rf_rcap_a_vec[37:32]};
+    //assign rdata_b_tmp = rf_rdata_b_ecc_i[31:0] ^ rf_rcap_b_vec[31:0] ^ {26'h0, rf_rcap_b_vec[37:32]};
+    prim_secded_inv_39_32_dec regfile_ecc_dec_a (
+      .data_i    ({rf_rdata_a_ecc_i[38:32], rdata_a_tmp}),
+      .data_o    (),
+      .syndrome_o(),
+      .err_o     (rf_ecc_err_a)
+    );
+    prim_secded_inv_39_32_dec regfile_ecc_dec_b (
+      .data_i    ({rf_rdata_b_ecc_i[38:32], rdata_b_tmp}),
+      .data_o    (),
+      .syndrome_o(),
+      .err_o     (rf_ecc_err_b)
+    );
+
+    // Assign read outputs - no error correction, just trigger an alert
+    assign rf_rdata_a = rf_rdata_a_ecc_i[31:0];
+    assign rf_rdata_b = rf_rdata_b_ecc_i[31:0];
+
+    // Calculate errors - qualify with WB forwarding to avoid xprop into the alert signal
+    assign rf_ecc_err_a_id = |rf_ecc_err_a & rf_ren_a & ~rf_rd_a_wb_match;
+    assign rf_ecc_err_b_id = |rf_ecc_err_b & rf_ren_b & ~rf_rd_b_wb_match;
+
+    // Combined error
+    assign rf_ecc_err_comb = instr_valid_id & (rf_ecc_err_a_id | rf_ecc_err_b_id);
+
+  end else if (RegFileECC) begin : gen_regfile_ecc
+
     logic [1:0] rf_ecc_err_a, rf_ecc_err_b;
     logic       rf_ecc_err_a_id, rf_ecc_err_b_id;
 
@@ -1237,13 +1365,17 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     assign rf_rdata_b = rf_rdata_b_ecc_i[31:0];
 
     // Calculate errors - qualify with WB forwarding to avoid xprop into the alert signal
-    assign rf_ecc_err_a_id = |rf_ecc_err_a & rf_ren_a & ~(rf_rd_a_wb_match & rf_write_wb);
-    assign rf_ecc_err_b_id = |rf_ecc_err_b & rf_ren_b & ~(rf_rd_b_wb_match & rf_write_wb);
+    assign rf_ecc_err_a_id = |rf_ecc_err_a & rf_ren_a & ~rf_rd_a_wb_match;
+    assign rf_ecc_err_b_id = |rf_ecc_err_b & rf_ren_b & ~rf_rd_b_wb_match;
 
     // Combined error
     assign rf_ecc_err_comb = instr_valid_id & (rf_ecc_err_a_id | rf_ecc_err_b_id);
 
+    assign rf_trvk_par_o = 7'h0;
+    assign rf_trsv_par_o = 7'h0;
+
   end else begin : gen_no_regfile_ecc
+
     logic unused_rf_ren_a, unused_rf_ren_b;
     logic unused_rf_rd_a_wb_match, unused_rf_rd_b_wb_match;
 
@@ -1255,94 +1387,30 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     assign rf_rdata_a              = rf_rdata_a_ecc_i;
     assign rf_rdata_b              = rf_rdata_b_ecc_i;
     assign rf_ecc_err_comb         = 1'b0;
-  end
+
+    assign rf_trvk_par_o = 7'h0;
+    assign rf_trsv_par_o = 7'h0;
+end
 
   ///////////////////////
   // Crash dump output //
   ///////////////////////
 
-  logic [31:0] crash_dump_mtval;
   assign crash_dump_o.current_pc     = pc_id;
   assign crash_dump_o.next_pc        = pc_if;
   assign crash_dump_o.last_data_addr = lsu_addr_last;
-  assign crash_dump_o.exception_pc   = csr_mepc;
-  assign crash_dump_o.exception_addr = crash_dump_mtval;
+  assign crash_dump_o.exception_addr = csr_mepc;
 
   ///////////////////
   // Alert outputs //
   ///////////////////
 
   // Minor alert - core is in a recoverable state
-  assign alert_minor_o = icache_ecc_error;
+  // TODO add I$ ECC errors here
+  assign alert_minor_o = 1'b0;
 
-  // Major internal alert - core is unrecoverable
-  assign alert_major_internal_o = rf_ecc_err_comb | pc_mismatch_alert | csr_shadow_err;
-  // Major bus alert
-  assign alert_major_bus_o = lsu_load_resp_intg_err | lsu_store_resp_intg_err | instr_intg_err;
-
-  // Explict INC_ASSERT block to avoid unused signal lint warnings were asserts are not included
-  `ifdef INC_ASSERT
-  // Signals used for assertions only
-  logic outstanding_load_resp;
-  logic outstanding_store_resp;
-
-  logic outstanding_load_id;
-  logic outstanding_store_id;
-
-  assign outstanding_load_id  = id_stage_i.instr_executing & id_stage_i.lsu_req_dec &
-                                ~id_stage_i.lsu_we;
-  assign outstanding_store_id = id_stage_i.instr_executing & id_stage_i.lsu_req_dec &
-                                id_stage_i.lsu_we;
-
-  if (WritebackStage) begin : gen_wb_stage
-    // When the writeback stage is present a load/store could be in ID or WB. A Load/store in ID can
-    // see a response before it moves to WB when it is unaligned otherwise we should only see
-    // a response when load/store is in WB.
-    assign outstanding_load_resp  = outstanding_load_wb |
-      (outstanding_load_id  & load_store_unit_i.split_misaligned_access);
-
-    assign outstanding_store_resp = outstanding_store_wb |
-      (outstanding_store_id & load_store_unit_i.split_misaligned_access);
-
-    // When writing back the result of a load, the load must have made it to writeback
-    `ASSERT(NoMemRFWriteWithoutPendingLoad, rf_we_lsu |-> outstanding_load_wb, clk_i, !rst_ni)
-  end else begin : gen_no_wb_stage
-    // Without writeback stage only look into whether load or store is in ID to determine if
-    // a response is expected.
-    assign outstanding_load_resp  = outstanding_load_id;
-    assign outstanding_store_resp = outstanding_store_id;
-
-    `ASSERT(NoMemRFWriteWithoutPendingLoad, rf_we_lsu |-> outstanding_load_id, clk_i, !rst_ni)
-  end
-
-  `ASSERT(NoMemResponseWithoutPendingAccess,
-    data_rvalid_i |-> outstanding_load_resp | outstanding_store_resp, clk_i, !rst_ni)
-
-
-  // Keep track of the PC last seen in the ID stage when fetch is disabled
-  logic [31:0]   pc_at_fetch_disable;
-  ibex_mubi_t    last_fetch_enable;
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      pc_at_fetch_disable <= '0;
-      last_fetch_enable   <= '0;
-    end else begin
-      last_fetch_enable <= fetch_enable_i;
-
-      if ((fetch_enable_i != IbexMuBiOn) && (last_fetch_enable == IbexMuBiOn)) begin
-        pc_at_fetch_disable <= pc_id;
-      end
-    end
-  end
-
-  // When fetch is disabled no instructions should be executed. Once fetch is disabled either the
-  // ID/EX stage is not valid or the PC of the ID/EX stage must remain as it was at disable. The
-  // ID/EX valid should not ressert once it has been cleared.
-  `ASSERT(NoExecWhenFetchEnableNotOn, fetch_enable_i != IbexMuBiOn |=>
-    (~instr_valid_id || (pc_id == pc_at_fetch_disable)) && ~$rose(instr_valid_id))
-
-  `endif
+  // Major alert - core is unrecoverable
+  assign alert_major_o = rf_ecc_err_comb | pc_mismatch_alert | csr_shadow_err;
 
   ////////////////////////
   // RF (Register File) //
@@ -1358,7 +1426,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   assign csr_wdata  = alu_operand_a_ex;
   assign csr_addr   = csr_num_e'(csr_access ? alu_operand_b_ex[11:0] : 12'b0);
 
-    ibex_cs_registers #(
+  ibex_cs_registers #(
     .DbgTriggerEn     (DbgTriggerEn),
     .DbgHwBreakNum    (DbgHwBreakNum),
     .DataIndTiming    (DataIndTiming),
@@ -1490,26 +1558,16 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     .cheri_fatal_err_o      (cheri_fatal_err_o)
   );
 
-  // These assertions are in top-level as instr_valid_id required as the enable term
-  `ASSERT(IbexCsrOpValid, instr_valid_id |-> csr_op inside {
-      CSR_OP_READ,
-      CSR_OP_WRITE,
-      CSR_OP_SET,
-      CSR_OP_CLEAR
-      })
-  `ASSERT_KNOWN_IF(IbexCsrWdataIntKnown, cs_registers_i.csr_wdata_int, csr_op_en)
 
   if (PMPEnable) begin : g_pmp
-    logic [31:0] pc_if_inc;
-    logic [33:0] pmp_req_addr [PMPNumChan];
-    pmp_req_e    pmp_req_type [PMPNumChan];
-    priv_lvl_e   pmp_priv_lvl [PMPNumChan];
+    logic [33:0] pmp_req_addr [PMP_NUM_CHAN];
+    pmp_req_e    pmp_req_type [PMP_NUM_CHAN];
+    priv_lvl_e   pmp_priv_lvl [PMP_NUM_CHAN];
 
-    assign pc_if_inc            = pc_if + 32'd2;
     assign pmp_req_addr[PMP_I]  = {2'b00, pc_if};
     assign pmp_req_type[PMP_I]  = PMP_ACC_EXEC;
     assign pmp_priv_lvl[PMP_I]  = priv_mode_id;
-    assign pmp_req_addr[PMP_I2] = {2'b00, pc_if_inc};
+    assign pmp_req_addr[PMP_I2] = {2'b00, (pc_if + 32'd2)};
     assign pmp_req_type[PMP_I2] = PMP_ACC_EXEC;
     assign pmp_priv_lvl[PMP_I2] = priv_mode_id;
     assign pmp_req_addr[PMP_D]  = {2'b00, data_addr_o[31:0]};
@@ -1518,7 +1576,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
     ibex_pmp #(
       .PMPGranularity(PMPGranularity),
-      .PMPNumChan    (PMPNumChan),
+      .PMPNumChan    (PMP_NUM_CHAN),
       .PMPNumRegions (PMPNumRegions)
     ) pmp_i (
       // Interface to CSRs
@@ -1571,15 +1629,21 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic [31:0] rvfi_stage_rs1_rdata [RVFI_STAGES];
   logic [31:0] rvfi_stage_rs2_rdata [RVFI_STAGES];
   logic [31:0] rvfi_stage_rs3_rdata [RVFI_STAGES];
+  reg_cap_t    rvfi_stage_rs1_rcap [RVFI_STAGES];
+  reg_cap_t    rvfi_stage_rs2_rcap [RVFI_STAGES];
   logic [ 4:0] rvfi_stage_rd_addr   [RVFI_STAGES];
   logic [31:0] rvfi_stage_rd_wdata  [RVFI_STAGES];
+  reg_cap_t    rvfi_stage_rd_wcap [RVFI_STAGES];
   logic [31:0] rvfi_stage_pc_rdata  [RVFI_STAGES];
   logic [31:0] rvfi_stage_pc_wdata  [RVFI_STAGES];
   logic [31:0] rvfi_stage_mem_addr  [RVFI_STAGES];
   logic [ 3:0] rvfi_stage_mem_rmask [RVFI_STAGES];
   logic [ 3:0] rvfi_stage_mem_wmask [RVFI_STAGES];
-  logic [31:0] rvfi_stage_mem_rdata [RVFI_STAGES];
-  logic [31:0] rvfi_stage_mem_wdata [RVFI_STAGES];
+  logic [DataWidth-1:0] rvfi_stage_mem_rdata [RVFI_STAGES];
+  reg_cap_t    rvfi_stage_mem_rcap  [RVFI_STAGES];
+  logic [DataWidth-1:0] rvfi_stage_mem_wdata [RVFI_STAGES];
+  reg_cap_t    rvfi_stage_mem_wcap  [RVFI_STAGES];
+  logic        rvfi_stage_mem_is_cap [RVFI_STAGES];
 
   logic        rvfi_instr_new_wb;
   logic        rvfi_intr_d;
@@ -1596,6 +1660,12 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic [31:0] rvfi_rs1_data_q;
   logic [31:0] rvfi_rs2_data_d;
   logic [31:0] rvfi_rs2_data_q;
+  reg_cap_t    rvfi_rs1_cap_d;
+  reg_cap_t    rvfi_rs1_cap_q;
+  reg_cap_t    rvfi_rs2_cap_d;
+  reg_cap_t    rvfi_rs2_cap_q;
+  reg_cap_t    rvfi_rd_cap_d;
+  reg_cap_t    rvfi_rd_cap_q;
   logic [31:0] rvfi_rs3_data_d;
   logic [4:0]  rvfi_rd_addr_wb;
   logic [4:0]  rvfi_rd_addr_q;
@@ -1611,9 +1681,14 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   logic [31:0] rvfi_mem_wdata_q;
   logic [31:0] rvfi_mem_addr_d;
   logic [31:0] rvfi_mem_addr_q;
+  logic        rvfi_mem_is_cap_d;
+  logic        rvfi_mem_is_cap_q;
+  reg_cap_t    rvfi_mem_rcap_d;
+  reg_cap_t    rvfi_mem_rcap_q;
+  reg_cap_t    rvfi_mem_wcap_d;
+  reg_cap_t    rvfi_mem_wcap_q;
   logic        rvfi_trap_id;
   logic        rvfi_trap_wb;
-  logic        rvfi_irq_valid;
   logic [63:0] rvfi_stage_order_d;
   logic        rvfi_id_done;
   logic        rvfi_wb_done;
@@ -1628,18 +1703,14 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // RVFI extension for co-simulation support
   // debug_req and MIP captured at IF -> ID transition so one extra stage
-  ibex_pkg::irqs_t rvfi_ext_stage_pre_mip          [RVFI_STAGES+1];
-  ibex_pkg::irqs_t rvfi_ext_stage_post_mip         [RVFI_STAGES];
-  logic            rvfi_ext_stage_nmi              [RVFI_STAGES+1];
-  logic            rvfi_ext_stage_debug_req        [RVFI_STAGES+1];
-  logic            rvfi_ext_stage_debug_mode       [RVFI_STAGES];
-  logic [63:0]     rvfi_ext_stage_mcycle           [RVFI_STAGES];
-  logic [31:0]     rvfi_ext_stage_mhpmcounters     [RVFI_STAGES][10];
-  logic [31:0]     rvfi_ext_stage_mhpmcountersh    [RVFI_STAGES][10];
-  logic            rvfi_ext_stage_irq_valid        [RVFI_STAGES+1];
-
+  ibex_pkg::irqs_t rvfi_ext_stage_mip          [RVFI_STAGES+1];
+  logic            rvfi_ext_stage_nmi          [RVFI_STAGES+1];
+  logic            rvfi_ext_stage_debug_req    [RVFI_STAGES+1];
+  logic [63:0]     rvfi_ext_stage_mcycle       [RVFI_STAGES];
 
   logic        rvfi_stage_valid_d   [RVFI_STAGES];
+  
+  logic        insn_c_hint;
 
   assign rvfi_valid     = rvfi_stage_valid    [RVFI_STAGES-1];
   assign rvfi_order     = rvfi_stage_order    [RVFI_STAGES-1];
@@ -1654,9 +1725,11 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   assign rvfi_rs3_addr  = rvfi_stage_rs3_addr [RVFI_STAGES-1];
   assign rvfi_rs1_rdata = rvfi_stage_rs1_rdata[RVFI_STAGES-1];
   assign rvfi_rs2_rdata = rvfi_stage_rs2_rdata[RVFI_STAGES-1];
+  assign rvfi_rs1_rcap  = rvfi_stage_rs1_rcap [RVFI_STAGES-1];
+  assign rvfi_rs2_rcap  = rvfi_stage_rs2_rcap [RVFI_STAGES-1];
   assign rvfi_rs3_rdata = rvfi_stage_rs3_rdata[RVFI_STAGES-1];
-  assign rvfi_rd_addr   = rvfi_stage_rd_addr  [RVFI_STAGES-1];
   assign rvfi_rd_wdata  = rvfi_stage_rd_wdata [RVFI_STAGES-1];
+  assign rvfi_rd_wcap   = rvfi_stage_rd_wcap  [RVFI_STAGES-1];
   assign rvfi_pc_rdata  = rvfi_stage_pc_rdata [RVFI_STAGES-1];
   assign rvfi_pc_wdata  = rvfi_stage_pc_wdata [RVFI_STAGES-1];
   assign rvfi_mem_addr  = rvfi_stage_mem_addr [RVFI_STAGES-1];
@@ -1664,38 +1737,45 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   assign rvfi_mem_wmask = rvfi_stage_mem_wmask[RVFI_STAGES-1];
   assign rvfi_mem_rdata = rvfi_stage_mem_rdata[RVFI_STAGES-1];
   assign rvfi_mem_wdata = rvfi_stage_mem_wdata[RVFI_STAGES-1];
+  assign rvfi_mem_is_cap = rvfi_stage_mem_is_cap[RVFI_STAGES-1];
+  assign rvfi_mem_rcap  = rvfi_stage_mem_rcap[RVFI_STAGES-1];
+  assign rvfi_mem_wcap  = rvfi_stage_mem_wcap[RVFI_STAGES-1];
+
+  // for HINT instructions like c.srai64/c.slli64, force rvfi_rd_addr output to 0 to match sail implementation
+  assign rvfi_rd_addr   = insn_c_hint ? 0 : rvfi_stage_rd_addr [RVFI_STAGES-1];
+
+  always_comb begin
+    if ((rvfi_insn[1:0] == 2'b01) && (rvfi_insn[15:13] == 3'b100) && (rvfi_insn[11:10] == 2'b00) &&      // c.srli64
+       ({rvfi_insn[12], rvfi_insn[6:2]} == 6'h0) &&
+        (rvfi_rs1_addr == rvfi_rd_addr) && (rvfi_rs1_rdata == rvfi_rd_wdata))
+      insn_c_hint = 1'b1;
+    else if ((rvfi_insn[1:0] == 2'b01) && (rvfi_insn[15:13] == 3'b100) && (rvfi_insn[11:10] == 2'b01) && // c.srai64
+       ({rvfi_insn[12], rvfi_insn[6:2]} == 6'h0) &&
+        (rvfi_rs1_addr == rvfi_rd_addr) && (rvfi_rs1_rdata == rvfi_rd_wdata))
+      insn_c_hint = 1'b1;
+    else 
+      insn_c_hint = 1'b0;
+   
+     
+  end 
 
   assign rvfi_rd_addr_wb  = rf_waddr_wb;
-  assign rvfi_rd_wdata_wb = rf_we_wb ? rf_wdata_wb : rf_wdata_lsu;
+  assign rvfi_rd_wdata_wb = rf_we_wb ? rf_wdata_wb : rf_wdata_lsu; // this doesn't look right but ok
   assign rvfi_rd_we_wb    = rf_we_wb | rf_we_lsu;
 
   always_comb begin
     // Use always_comb instead of continuous assign so first assign can set 0 as default everywhere
     // that is overridden by more specific settings.
-    rvfi_ext_pre_mip               = '0;
-    rvfi_ext_pre_mip[CSR_MSIX_BIT] = rvfi_ext_stage_pre_mip[RVFI_STAGES].irq_software;
-    rvfi_ext_pre_mip[CSR_MTIX_BIT] = rvfi_ext_stage_pre_mip[RVFI_STAGES].irq_timer;
-    rvfi_ext_pre_mip[CSR_MEIX_BIT] = rvfi_ext_stage_pre_mip[RVFI_STAGES].irq_external;
-
-    rvfi_ext_pre_mip[CSR_MFIX_BIT_HIGH:CSR_MFIX_BIT_LOW] =
-      rvfi_ext_stage_pre_mip[RVFI_STAGES].irq_fast;
-
-    rvfi_ext_post_mip               = '0;
-    rvfi_ext_post_mip[CSR_MSIX_BIT] = rvfi_ext_stage_post_mip[RVFI_STAGES-1].irq_software;
-    rvfi_ext_post_mip[CSR_MTIX_BIT] = rvfi_ext_stage_post_mip[RVFI_STAGES-1].irq_timer;
-    rvfi_ext_post_mip[CSR_MEIX_BIT] = rvfi_ext_stage_post_mip[RVFI_STAGES-1].irq_external;
-
-    rvfi_ext_post_mip[CSR_MFIX_BIT_HIGH:CSR_MFIX_BIT_LOW] =
-      rvfi_ext_stage_post_mip[RVFI_STAGES-1].irq_fast;
+    rvfi_ext_mip                                     = '0;
+    rvfi_ext_mip[CSR_MSIX_BIT]                       = rvfi_ext_stage_mip[RVFI_STAGES].irq_software;
+    rvfi_ext_mip[CSR_MTIX_BIT]                       = rvfi_ext_stage_mip[RVFI_STAGES].irq_timer;
+    rvfi_ext_mip[CSR_MEIX_BIT]                       = rvfi_ext_stage_mip[RVFI_STAGES].irq_external;
+    rvfi_ext_mip[CSR_MFIX_BIT_HIGH:CSR_MFIX_BIT_LOW] = rvfi_ext_stage_mip[RVFI_STAGES].irq_fast;
   end
 
-  assign rvfi_ext_nmi              = rvfi_ext_stage_nmi              [RVFI_STAGES];
-  assign rvfi_ext_debug_req        = rvfi_ext_stage_debug_req        [RVFI_STAGES];
-  assign rvfi_ext_debug_mode       = rvfi_ext_stage_debug_mode       [RVFI_STAGES-1];
-  assign rvfi_ext_mcycle           = rvfi_ext_stage_mcycle           [RVFI_STAGES-1];
-  assign rvfi_ext_mhpmcounters     = rvfi_ext_stage_mhpmcounters     [RVFI_STAGES-1];
-  assign rvfi_ext_mhpmcountersh    = rvfi_ext_stage_mhpmcountersh    [RVFI_STAGES-1];
-  assign rvfi_ext_irq_valid        = rvfi_ext_stage_irq_valid        [RVFI_STAGES];
+  assign rvfi_ext_nmi       = rvfi_ext_stage_nmi[RVFI_STAGES];
+  assign rvfi_ext_debug_req = rvfi_ext_stage_debug_req[RVFI_STAGES];
+  assign rvfi_ext_mcycle    = rvfi_ext_stage_mcycle[RVFI_STAGES-1];
 
   // When an instruction takes a trap the `rvfi_trap` signal will be set. Instructions that take
   // traps flush the pipeline so ordinarily wouldn't be seen to be retire. The RVFI tracking
@@ -1704,8 +1784,14 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // Factor in exceptions taken in ID so RVFI tracking picks up flushed instructions that took
   // a trap
+  // kliu 05082024: add the ~wb_exception_o iterm to handle the corner case where
+  // ID and WB both faulted, e.g., illegal_insn in ID and cheri_wb_err in WB
+  // The previous behavior is 2 rvfi items in the trace (both traps),
+  // even if the instruction in the ID is never executed.
+  // The new behavior only generate 1 rvfi item for wb stage fault
   assign rvfi_id_done = instr_id_done | (id_stage_i.controller_i.rvfi_flush_next &
-                                         id_stage_i.controller_i.id_exception_o);
+                                         id_stage_i.controller_i.id_exception_o &
+                                         ~id_stage_i.controller_i.wb_exception_o);
 
   if (WritebackStage) begin : gen_rvfi_wb_stage
     logic unused_instr_new_id;
@@ -1737,12 +1823,10 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       end
     end
 
-    assign rvfi_trap_id = id_stage_i.controller_i.id_exception_o &
-      ~(id_stage_i.ebrk_insn & id_stage_i.controller_i.ebreak_into_debug);
-
-    assign rvfi_trap_wb = id_stage_i.controller_i.exc_req_lsu;
+    assign rvfi_trap_id = id_stage_i.controller_i.id_exception_o;
+    assign rvfi_trap_wb = id_stage_i.controller_i.exc_req_wb ;
     // WB is instantly done in the tracking pipeline when a trap is progress through the pipeline
-    assign rvfi_wb_done = rvfi_stage_valid[0] & (instr_done_wb | rvfi_stage_trap[0]);
+    assign rvfi_wb_done = instr_done_wb | (rvfi_stage_valid[0] & rvfi_stage_trap[0]);
   end else begin : gen_rvfi_no_wb_stage
     // Without writeback stage first RVFI stage is output stage so simply valid the cycle after
     // instruction leaves ID/EX (and so has retired)
@@ -1750,9 +1834,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     // Without writeback stage signal new instr_new_wb when instruction enters ID/EX to correctly
     // setup register write signals
     assign rvfi_instr_new_wb = instr_new_id;
-    assign rvfi_trap_id =
-      (id_stage_i.controller_i.exc_req_d | id_stage_i.controller_i.exc_req_lsu) &
-      ~(id_stage_i.ebrk_insn & id_stage_i.controller_i.ebreak_into_debug);
+    assign rvfi_trap_id = id_stage_i.controller_i.exc_req_d | id_stage_i.controller_i.exc_req_lsu;
     assign rvfi_trap_wb = 1'b0;
     assign rvfi_wb_done = instr_done_wb;
   end
@@ -1782,8 +1864,7 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   // appropriately.
   assign new_debug_req = (debug_req_i & ~debug_mode);
   assign new_nmi = irq_nm_i & ~nmi_mode & ~debug_mode;
-  assign new_irq = irq_pending_o & (csr_mstatus_mie || (priv_mode_id == PRIV_LVL_U)) & ~nmi_mode &
-                   ~debug_mode;
+  assign new_irq = irq_pending_o & csr_mstatus_mie & ~nmi_mode & ~debug_mode;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -1791,34 +1872,14 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       captured_mip       <= '0;
       captured_nmi       <= 1'b0;
       captured_debug_req <= 1'b0;
-      rvfi_irq_valid     <= 1'b0;
     end else  begin
       // Capture when ID stage has emptied out and something occurs that will cause a trap and we
       // haven't yet captured
-      //
-      // When we already captured a trap, and there is upcoming nmi interrupt or
-      // a debug request then recapture as nmi or debug request are supposed to
-      // be serviced.
-      if (~instr_valid_id & (new_debug_req | new_irq | new_nmi) &
-          ((~captured_valid) |
-           (new_debug_req & ~captured_debug_req) |
-           (new_nmi & ~captured_nmi & ~captured_debug_req))) begin
+      if (~instr_valid_id & (new_debug_req | new_irq | new_nmi) & ~captured_valid) begin
         captured_valid     <= 1'b1;
         captured_nmi       <= irq_nm_i;
         captured_mip       <= cs_registers_i.mip;
         captured_debug_req <= debug_req_i;
-      end
-
-      // When the pipeline has emptied in preparation for handling a new interrupt send
-      // a notification up the RVFI pipeline. This is used by the cosim to deal with cases where an
-      // interrupt occurs before another interrupt or debug request but both occur before the first
-      // instruction of the handler is executed and retired (where the cosim will see all the
-      // interrupts and debug requests at once with no way to determine which occurred first).
-      if (~instr_valid_id & ~new_debug_req & (new_irq | new_nmi) & ready_wb &
-          ~captured_valid) begin
-        rvfi_irq_valid <= 1'b1;
-      end else begin
-        rvfi_irq_valid <= 1'b0;
       end
 
       // Capture cleared out as soon as a new instruction appears in ID
@@ -1836,11 +1897,11 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   // the DV environment will see if a trap should have been taken but wasn't.
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      rvfi_ext_stage_pre_mip[0]       <= '0;
+      rvfi_ext_stage_mip[0]       <= '0;
       rvfi_ext_stage_nmi[0]       <= '0;
       rvfi_ext_stage_debug_req[0] <= '0;
-    end else if ((if_stage_i.instr_valid_id_d & if_stage_i.instr_new_id_d) | rvfi_irq_valid) begin
-      rvfi_ext_stage_pre_mip[0]   <= instr_valid_id | ~captured_valid ? cs_registers_i.mip :
+    end else if (if_stage_i.instr_valid_id_d & if_stage_i.instr_new_id_d) begin
+      rvfi_ext_stage_mip[0]       <= instr_valid_id | ~captured_valid ? cs_registers_i.mip :
                                                                         captured_mip;
       rvfi_ext_stage_nmi[0]       <= instr_valid_id | ~captured_valid ? irq_nm_i :
                                                                         captured_nmi;
@@ -1849,180 +1910,168 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     end
   end
 
-
-  // rvfi_irq_valid signals an interrupt event to the cosim. These should only occur when the RVFI
-  // pipe is empty so just send it straigh through.
-  for (genvar i = 0; i < RVFI_STAGES + 1; i = i + 1) begin : g_rvfi_irq_valid
-    if (i == 0) begin : g_rvfi_irq_valid_first_stage
-      always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-          rvfi_ext_stage_irq_valid[i] <= 1'b0;
-        end else begin
-          rvfi_ext_stage_irq_valid[i] <= rvfi_irq_valid;
-        end
-      end
-    end else begin : g_rvfi_irq_valid_other_stages
-      always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-          rvfi_ext_stage_irq_valid[i] <= 1'b0;
-        end else begin
-          rvfi_ext_stage_irq_valid[i] <= rvfi_ext_stage_irq_valid[i-1];
-        end
-      end
-    end
-  end
+  logic is_mem_rd, is_mem_wr;
+  assign is_mem_rd = cpu_lsu_req & ~cpu_lsu_we;
+  assign is_mem_wr = cpu_lsu_req & cpu_lsu_we;
 
   for (genvar i = 0; i < RVFI_STAGES; i = i + 1) begin : g_rvfi_stages
+    int im1;
+
+    // this is just to get rid of the VCS elab warning (i-1 out of range when i==0)
+    if (i == 0)
+      assign im1 = 0;
+    else
+      assign im1 = i-1;
+
     always_ff @(posedge clk_i or negedge rst_ni) begin
       if (!rst_ni) begin
-        rvfi_stage_halt[i]                 <= '0;
-        rvfi_stage_trap[i]                 <= '0;
-        rvfi_stage_intr[i]                 <= '0;
-        rvfi_stage_order[i]                <= '0;
-        rvfi_stage_insn[i]                 <= '0;
-        rvfi_stage_mode[i]                 <= {PRIV_LVL_M};
-        rvfi_stage_ixl[i]                  <= CSR_MISA_MXL;
-        rvfi_stage_rs1_addr[i]             <= '0;
-        rvfi_stage_rs2_addr[i]             <= '0;
-        rvfi_stage_rs3_addr[i]             <= '0;
-        rvfi_stage_pc_rdata[i]             <= '0;
-        rvfi_stage_pc_wdata[i]             <= '0;
-        rvfi_stage_mem_rmask[i]            <= '0;
-        rvfi_stage_mem_wmask[i]            <= '0;
-        rvfi_stage_valid[i]                <= '0;
-        rvfi_stage_rs1_rdata[i]            <= '0;
-        rvfi_stage_rs2_rdata[i]            <= '0;
-        rvfi_stage_rs3_rdata[i]            <= '0;
-        rvfi_stage_rd_wdata[i]             <= '0;
-        rvfi_stage_rd_addr[i]              <= '0;
-        rvfi_stage_mem_rdata[i]            <= '0;
-        rvfi_stage_mem_wdata[i]            <= '0;
-        rvfi_stage_mem_addr[i]             <= '0;
-        rvfi_ext_stage_pre_mip[i+1]        <= '0;
-        rvfi_ext_stage_post_mip[i]         <= '0;
-        rvfi_ext_stage_nmi[i+1]            <= '0;
-        rvfi_ext_stage_debug_req[i+1]      <= '0;
-        rvfi_ext_stage_debug_mode[i]       <= '0;
-        rvfi_ext_stage_mcycle[i]           <= '0;
-        rvfi_ext_stage_mhpmcounters[i]     <= '{10{'0}};
-        rvfi_ext_stage_mhpmcountersh[i]    <= '{10{'0}};
+        rvfi_stage_halt[i]            <= '0;
+        rvfi_stage_trap[i]            <= '0;
+        rvfi_stage_intr[i]            <= '0;
+        rvfi_stage_order[i]           <= '0;
+        rvfi_stage_insn[i]            <= '0;
+        rvfi_stage_mode[i]            <= {PRIV_LVL_M};
+        rvfi_stage_ixl[i]             <= CSR_MISA_MXL;
+        rvfi_stage_rs1_addr[i]        <= '0;
+        rvfi_stage_rs2_addr[i]        <= '0;
+        rvfi_stage_rs3_addr[i]        <= '0;
+        rvfi_stage_pc_rdata[i]        <= '0;
+        rvfi_stage_pc_wdata[i]        <= '0;
+        rvfi_stage_mem_rmask[i]       <= '0;
+        rvfi_stage_mem_wmask[i]       <= '0;
+        rvfi_stage_valid[i]           <= '0;
+        rvfi_stage_rs1_rdata[i]       <= '0;
+        rvfi_stage_rs2_rdata[i]       <= '0;
+        rvfi_stage_rs3_rdata[i]       <= '0;
+        rvfi_stage_rs1_rcap[i]        <= NULL_REG_CAP;
+        rvfi_stage_rs2_rcap[i]        <= NULL_REG_CAP;;
+        rvfi_stage_rd_wdata[i]        <= '0;
+        rvfi_stage_rd_wcap[i]         <= NULL_REG_CAP;;
+        rvfi_stage_rd_addr[i]         <= '0;
+        rvfi_stage_mem_rdata[i]       <= '0;
+        rvfi_stage_mem_wdata[i]       <= '0;
+        rvfi_stage_mem_addr[i]        <= '0;
+        rvfi_ext_stage_mip[i+1]       <= '0;
+        rvfi_ext_stage_nmi[i+1]       <= '0;
+        rvfi_ext_stage_debug_req[i+1] <= '0;
+        rvfi_ext_stage_mcycle[i]      <= '0;
       end else begin
         rvfi_stage_valid[i] <= rvfi_stage_valid_d[i];
 
         if (i == 0) begin
           if (rvfi_id_done) begin
-            rvfi_stage_halt[i]                 <= '0;
-            rvfi_stage_trap[i]                 <= rvfi_trap_id;
-            rvfi_stage_intr[i]                 <= rvfi_intr_d;
-            rvfi_stage_order[i]                <= rvfi_stage_order_d;
-            rvfi_stage_insn[i]                 <= rvfi_insn_id;
-            rvfi_stage_mode[i]                 <= {priv_mode_id};
-            rvfi_stage_ixl[i]                  <= CSR_MISA_MXL;
-            rvfi_stage_rs1_addr[i]             <= rvfi_rs1_addr_d;
-            rvfi_stage_rs2_addr[i]             <= rvfi_rs2_addr_d;
-            rvfi_stage_rs3_addr[i]             <= rvfi_rs3_addr_d;
-            rvfi_stage_pc_rdata[i]             <= pc_id;
-            rvfi_stage_pc_wdata[i]             <= pc_set ? branch_target_ex : pc_if;
-            rvfi_stage_mem_rmask[i]            <= rvfi_mem_mask_int;
-            rvfi_stage_mem_wmask[i]            <= data_we_o ? rvfi_mem_mask_int : 4'b0000;
-            rvfi_stage_rs1_rdata[i]            <= rvfi_rs1_data_d;
-            rvfi_stage_rs2_rdata[i]            <= rvfi_rs2_data_d;
-            rvfi_stage_rs3_rdata[i]            <= rvfi_rs3_data_d;
-            rvfi_stage_rd_addr[i]              <= rvfi_rd_addr_d;
-            rvfi_stage_rd_wdata[i]             <= rvfi_rd_wdata_d;
-            rvfi_stage_mem_rdata[i]            <= rvfi_mem_rdata_d;
-            rvfi_stage_mem_wdata[i]            <= rvfi_mem_wdata_d;
-            rvfi_stage_mem_addr[i]             <= rvfi_mem_addr_d;
-            rvfi_ext_stage_debug_mode[i]       <= debug_mode;
-            rvfi_ext_stage_mcycle[i]           <= cs_registers_i.mcycle_counter_i.counter_val_o;
-  
-            // This is done this way because SystemVerilog does not support looping through
-            // gen_cntrs[k] within a for loop.
-            for (int k=0; k < 10; k++) begin
-              rvfi_ext_stage_mhpmcounters[i][k]  <= cs_registers_i.mhpmcounter[k+3][31:0];
-              rvfi_ext_stage_mhpmcountersh[i][k] <= cs_registers_i.mhpmcounter[k+3][63:32];
-            end
-          end
-
-          // Some of the rvfi_ext_* signals are used to provide an interrupt notification (signalled
-          // via rvfi_ext_irq_valid) when there isn't a valid retired instruction as well as
-          // providing information along with a retired instruction. Move these up the rvfi pipeline
-          // for both cases.
-          if (rvfi_id_done | rvfi_ext_stage_irq_valid[i]) begin
-            rvfi_ext_stage_pre_mip[i+1]   <= rvfi_ext_stage_pre_mip[i];
-            rvfi_ext_stage_post_mip[i]    <= cs_registers_i.mip;
+            rvfi_stage_halt[i]      <= '0;
+            // TODO: Sort this out for writeback stage
+            rvfi_stage_trap[i]            <= rvfi_trap_id;
+            rvfi_stage_intr[i]            <= rvfi_intr_d;
+            rvfi_stage_order[i]           <= rvfi_stage_order_d;
+            rvfi_stage_insn[i]            <= rvfi_insn_id;
+            rvfi_stage_mode[i]            <= {priv_mode_id};
+            rvfi_stage_ixl[i]             <= CSR_MISA_MXL;
+            rvfi_stage_rs1_addr[i]        <= rvfi_rs1_addr_d;
+            rvfi_stage_rs2_addr[i]        <= rvfi_rs2_addr_d;
+            rvfi_stage_rs3_addr[i]        <= rvfi_rs3_addr_d;
+            rvfi_stage_pc_rdata[i]        <= pc_id;
+            rvfi_stage_pc_wdata[i]        <= pc_set ? branch_target_ex : pc_if;
+            rvfi_stage_mem_rmask[i]       <= is_mem_rd ? rvfi_mem_mask_int : 4'b0000;  // kliu
+            rvfi_stage_mem_wmask[i]       <= is_mem_wr ? rvfi_mem_mask_int : 4'b0000;
+            rvfi_stage_rs1_rdata[i]       <= rvfi_rs1_data_d;
+            rvfi_stage_rs2_rdata[i]       <= rvfi_rs2_data_d;
+            rvfi_stage_rs3_rdata[i]       <= rvfi_rs3_data_d;
+            rvfi_stage_rs1_rcap[i]        <= rvfi_rs1_cap_d;
+            rvfi_stage_rs2_rcap[i]        <= rvfi_rs2_cap_d;
+            rvfi_stage_rd_addr[i]         <= rvfi_rd_addr_d;
+            rvfi_stage_rd_wdata[i]        <= rvfi_rd_wdata_d;
+            rvfi_stage_rd_wcap[i]         <= rvfi_rd_cap_d;
+            rvfi_stage_mem_rdata[i]       <= rvfi_mem_rdata_d;
+            rvfi_stage_mem_wdata[i]       <= rvfi_mem_wdata_d;
+            rvfi_stage_mem_rcap[i]        <= rvfi_mem_rcap_d;
+            rvfi_stage_mem_wcap[i]        <= rvfi_mem_wcap_d;
+            rvfi_stage_mem_is_cap[i]      <= rvfi_mem_is_cap_d;
+            rvfi_stage_mem_addr[i]        <= rvfi_mem_addr_d;
+            rvfi_ext_stage_mip[i+1]       <= rvfi_ext_stage_mip[i];
             rvfi_ext_stage_nmi[i+1]       <= rvfi_ext_stage_nmi[i];
             rvfi_ext_stage_debug_req[i+1] <= rvfi_ext_stage_debug_req[i];
+            rvfi_ext_stage_mcycle[i]      <= cs_registers_i.mcycle_counter_i.counter_val_o;
           end
         end else begin
           if (rvfi_wb_done) begin
-            rvfi_stage_halt[i]      <= rvfi_stage_halt[i-1];
-            rvfi_stage_trap[i]      <= rvfi_stage_trap[i-1] | rvfi_trap_wb;
-            rvfi_stage_intr[i]      <= rvfi_stage_intr[i-1];
-            rvfi_stage_order[i]     <= rvfi_stage_order[i-1];
-            rvfi_stage_insn[i]      <= rvfi_stage_insn[i-1];
-            rvfi_stage_mode[i]      <= rvfi_stage_mode[i-1];
-            rvfi_stage_ixl[i]       <= rvfi_stage_ixl[i-1];
-            rvfi_stage_rs1_addr[i]  <= rvfi_stage_rs1_addr[i-1];
-            rvfi_stage_rs2_addr[i]  <= rvfi_stage_rs2_addr[i-1];
-            rvfi_stage_rs3_addr[i]  <= rvfi_stage_rs3_addr[i-1];
-            rvfi_stage_pc_rdata[i]  <= rvfi_stage_pc_rdata[i-1];
-            rvfi_stage_pc_wdata[i]  <= rvfi_stage_pc_wdata[i-1];
-            rvfi_stage_mem_rmask[i] <= rvfi_stage_mem_rmask[i-1];
-            rvfi_stage_mem_wmask[i] <= rvfi_stage_mem_wmask[i-1];
-            rvfi_stage_rs1_rdata[i] <= rvfi_stage_rs1_rdata[i-1];
-            rvfi_stage_rs2_rdata[i] <= rvfi_stage_rs2_rdata[i-1];
-            rvfi_stage_rs3_rdata[i] <= rvfi_stage_rs3_rdata[i-1];
-            rvfi_stage_mem_wdata[i] <= rvfi_stage_mem_wdata[i-1];
-            rvfi_stage_mem_addr[i]  <= rvfi_stage_mem_addr[i-1];
+            rvfi_stage_halt[i]      <= rvfi_stage_halt[im1];
+            rvfi_stage_trap[i]      <= rvfi_stage_trap[im1] | rvfi_trap_wb;
+            rvfi_stage_intr[i]      <= rvfi_stage_intr[im1];
+            rvfi_stage_order[i]     <= rvfi_stage_order[im1];
+            rvfi_stage_insn[i]      <= rvfi_stage_insn[im1];
+            rvfi_stage_mode[i]      <= rvfi_stage_mode[im1];
+            rvfi_stage_ixl[i]       <= rvfi_stage_ixl[im1];
+            rvfi_stage_rs1_addr[i]  <= rvfi_stage_rs1_addr[im1];
+            rvfi_stage_rs2_addr[i]  <= rvfi_stage_rs2_addr[im1];
+            rvfi_stage_rs3_addr[i]  <= rvfi_stage_rs3_addr[im1];
+            rvfi_stage_pc_rdata[i]  <= rvfi_stage_pc_rdata[im1];
+            rvfi_stage_pc_wdata[i]  <= rvfi_stage_pc_wdata[im1];
+            rvfi_stage_mem_rmask[i] <= rvfi_trap_wb ? 4'b0000 : rvfi_stage_mem_rmask[im1];
+            rvfi_stage_mem_wmask[i] <= rvfi_trap_wb ? 4'b0000 : rvfi_stage_mem_wmask[im1];
+            rvfi_stage_rs1_rdata[i] <= rvfi_stage_rs1_rdata[im1];
+            rvfi_stage_rs2_rdata[i] <= rvfi_stage_rs2_rdata[im1];
+            rvfi_stage_rs3_rdata[i] <= rvfi_stage_rs3_rdata[im1];
+            rvfi_stage_mem_wdata[i] <= rvfi_stage_mem_wdata[im1];
+            rvfi_stage_mem_is_cap[i] <= rvfi_stage_mem_is_cap[im1];
+            rvfi_stage_mem_wcap[i]   <= rvfi_stage_mem_wcap[im1];
+            rvfi_stage_mem_addr[i]  <= rvfi_stage_mem_addr[im1];
+            rvfi_stage_rs1_rcap[i]  <= rvfi_stage_rs1_rcap[im1];
+            rvfi_stage_rs2_rcap[i]  <= rvfi_stage_rs2_rcap[im1];
 
-            // For 2 RVFI_STAGES/Writeback Stage ignore first stage flops for rd_addr, rd_wdata and
+            // For 2 RVFI_STAGES/Writeback Sor 2 Rtage ignore first stage flops for rd_addr, rd_wdata and
             // mem_rdata. For RF write addr/data actual write happens in writeback so capture
             // address/data there. For mem_rdata that is only available from the writeback stage.
             // Previous stage flops still exist in RTL as they are used by the non writeback config
             rvfi_stage_rd_addr[i]   <= rvfi_rd_addr_d;
             rvfi_stage_rd_wdata[i]  <= rvfi_rd_wdata_d;
             rvfi_stage_mem_rdata[i] <= rvfi_mem_rdata_d;
+            rvfi_stage_mem_rcap[i]  <= rvfi_mem_rcap_d;
+            rvfi_stage_rd_wcap[i]   <= rvfi_rd_cap_d;
 
-            rvfi_ext_stage_debug_mode[i]       <= rvfi_ext_stage_debug_mode[i-1];
-            rvfi_ext_stage_mcycle[i]           <= rvfi_ext_stage_mcycle[i-1];
-            rvfi_ext_stage_mhpmcounters[i]     <= rvfi_ext_stage_mhpmcounters[i-1];
-            rvfi_ext_stage_mhpmcountersh[i]    <= rvfi_ext_stage_mhpmcountersh[i-1];
-          end
-
-          // Some of the rvfi_ext_* signals are used to provide an interrupt notification (signalled
-          // via rvfi_ext_irq_valid) when there isn't a valid retired instruction as well as
-          // providing information along with a retired instruction. Move these up the rvfi pipeline
-          // for both cases.
-          if (rvfi_wb_done | rvfi_ext_stage_irq_valid[i]) begin
-            rvfi_ext_stage_pre_mip[i+1]   <= rvfi_ext_stage_pre_mip[i];
-            rvfi_ext_stage_post_mip[i]    <= rvfi_ext_stage_post_mip[i-1];
+            rvfi_ext_stage_mip[i+1]       <= rvfi_ext_stage_mip[i];
             rvfi_ext_stage_nmi[i+1]       <= rvfi_ext_stage_nmi[i];
             rvfi_ext_stage_debug_req[i+1] <= rvfi_ext_stage_debug_req[i];
+            rvfi_ext_stage_mcycle[i]      <= rvfi_ext_stage_mcycle[im1];
           end
         end
       end
     end
   end
 
-
   // Memory adddress/write data available first cycle of ld/st instruction from register read
   always_comb begin
-    if (instr_first_cycle_id) begin
-      rvfi_mem_addr_d  = alu_adder_result_ex;
-      rvfi_mem_wdata_d = lsu_wdata;
+    if (~CheriTBRE & instr_first_cycle_id) begin
+      // rvfi_mem_addr_d    = alu_adder_result_ex;
+      rvfi_mem_addr_d    = cpu_lsu_addr;
+      rvfi_mem_wdata_d   = cpu_lsu_wdata;
+      rvfi_mem_wcap_d    = cpu_lsu_wcap;
+      rvfi_mem_is_cap_d  = cpu_lsu_is_cap;
+    end else if (CheriTBRE & cpu_lsu_req & cpu_lsu_dec & ~lsu_addr_incr_req) begin
+      rvfi_mem_addr_d    = cpu_lsu_addr;
+      rvfi_mem_wdata_d   = cpu_lsu_wdata;
+      rvfi_mem_wcap_d    = cpu_lsu_wcap;
+      rvfi_mem_is_cap_d  = cpu_lsu_is_cap;
     end else begin
-      rvfi_mem_addr_d  = rvfi_mem_addr_q;
-      rvfi_mem_wdata_d = rvfi_mem_wdata_q;
+      rvfi_mem_addr_d    = rvfi_mem_addr_q;
+      rvfi_mem_wdata_d   = rvfi_mem_wdata_q;
+      rvfi_mem_wcap_d    = rvfi_mem_wcap_q;
+      rvfi_mem_is_cap_d  = rvfi_mem_is_cap_q;
     end
   end
 
   // Capture read data from LSU when it becomes valid
   always_comb begin
-    if (lsu_resp_valid) begin
-      rvfi_mem_rdata_d = rf_wdata_lsu;
+    if (load_store_unit_i.resp_is_cap_q & lsu_resp_valid) begin
+      rvfi_mem_rdata_d = rf_wdata_lsu;  
+      rvfi_mem_rcap_d  = rf_wcap_lsu;
+    end else if (lsu_resp_valid) begin
+      rvfi_mem_rdata_d = rf_wdata_lsu; 
+      rvfi_mem_rcap_d  = rvfi_mem_rcap_q;
     end else begin
       rvfi_mem_rdata_d = rvfi_mem_rdata_q;
+      rvfi_mem_rcap_d  = rvfi_mem_rcap_q;
     end
   end
 
@@ -2031,18 +2080,25 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       rvfi_mem_addr_q  <= '0;
       rvfi_mem_rdata_q <= '0;
       rvfi_mem_wdata_q <= '0;
+      rvfi_mem_rcap_q  <= NULL_REG_CAP;
+      rvfi_mem_wcap_q  <= NULL_REG_CAP;
+      rvfi_mem_is_cap_q <= 1'b0;
     end else begin
       rvfi_mem_addr_q  <= rvfi_mem_addr_d;
       rvfi_mem_rdata_q <= rvfi_mem_rdata_d;
       rvfi_mem_wdata_q <= rvfi_mem_wdata_d;
+      rvfi_mem_rcap_q  <= rvfi_mem_rcap_d;
+      rvfi_mem_wcap_q  <= rvfi_mem_wcap_d;
+      rvfi_mem_is_cap_q <=rvfi_mem_is_cap_d;
     end
   end
   // Byte enable based on data type
   always_comb begin
-    unique case (lsu_type)
+    unique case (cpu_lsu_type)
       2'b00:   rvfi_mem_mask_int = 4'b1111;
       2'b01:   rvfi_mem_mask_int = 4'b0011;
       2'b10:   rvfi_mem_mask_int = 4'b0001;
+      2'b11:   rvfi_mem_mask_int = 4'b0001;   // kliu
       default: rvfi_mem_mask_int = 4'b0000;
     endcase
   end
@@ -2057,6 +2113,21 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // Source registers 1 and 2 are read in the first instruction cycle
   // Source register 3 is read in the second instruction cycle.
+  if (CHERIoTEn) begin
+    always_comb begin
+      if (instr_first_cycle_id) begin
+        rvfi_rs1_cap_d  = rf_ren_a ? g_cheri_ex.u_cheri_ex.rf_rcap_a : NULL_REG_CAP;
+        rvfi_rs2_cap_d  = rf_ren_b ? g_cheri_ex.u_cheri_ex.rf_rcap_b : NULL_REG_CAP;
+      end else begin
+        rvfi_rs1_cap_d  = rvfi_rs1_cap_q;
+        rvfi_rs2_cap_d  = rvfi_rs2_cap_q;
+      end
+    end
+  end else begin
+    assign rvfi_rs1_cap_d  = NULL_REG_CAP; 
+    assign rvfi_rs2_cap_d  = NULL_REG_CAP;
+  end
+
   always_comb begin
     if (instr_first_cycle_id) begin
       rvfi_rs1_data_d = rf_ren_a ? multdiv_operand_a_ex : '0;
@@ -2074,18 +2145,22 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       rvfi_rs3_addr_d = rf_raddr_a;
     end
   end
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       rvfi_rs1_data_q <= '0;
       rvfi_rs1_addr_q <= '0;
       rvfi_rs2_data_q <= '0;
       rvfi_rs2_addr_q <= '0;
-
+      rvfi_rs1_cap_q  <= NULL_REG_CAP;
+      rvfi_rs2_cap_q  <= NULL_REG_CAP;
     end else begin
       rvfi_rs1_data_q <= rvfi_rs1_data_d;
       rvfi_rs1_addr_q <= rvfi_rs1_addr_d;
       rvfi_rs2_data_q <= rvfi_rs2_data_d;
       rvfi_rs2_addr_q <= rvfi_rs2_addr_d;
+      rvfi_rs1_cap_q  <= rvfi_rs1_cap_d;
+      rvfi_rs2_cap_q  <= rvfi_rs2_cap_d;
     end
   end
 
@@ -2096,18 +2171,22 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
       // If writing to x0 zero write data as required by RVFI specification
       if (rvfi_rd_addr_wb == 5'b0) begin
         rvfi_rd_wdata_d = '0;
+        rvfi_rd_cap_d   = NULL_REG_CAP;
       end else begin
         rvfi_rd_wdata_d = rvfi_rd_wdata_wb;
+        rvfi_rd_cap_d   = rf_wcap_wb;
       end
     end else if (rvfi_instr_new_wb) begin
       // If no RF write but new instruction in Writeback (when present) or ID/EX (when no writeback
       // stage present) then zero RF write address/data as required by RVFI specification
       rvfi_rd_addr_d  = '0;
       rvfi_rd_wdata_d = '0;
+      rvfi_rd_cap_d   = NULL_REG_CAP;
     end else begin
       // Otherwise maintain previous value
       rvfi_rd_addr_d  = rvfi_rd_addr_q;
       rvfi_rd_wdata_d = rvfi_rd_wdata_q;
+      rvfi_rd_cap_d   = rvfi_rd_cap_q;
     end
   end
 
@@ -2117,31 +2196,12 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
     if (!rst_ni) begin
       rvfi_rd_addr_q    <= '0;
       rvfi_rd_wdata_q   <= '0;
+      rvfi_rd_cap_q     <= NULL_REG_CAP;
     end else begin
       rvfi_rd_addr_q    <= rvfi_rd_addr_d;
       rvfi_rd_wdata_q   <= rvfi_rd_wdata_d;
+      rvfi_rd_cap_q     <= rvfi_rd_cap_d;
     end
-  end
-
-  if (WritebackStage) begin : g_rvfi_rf_wr_suppress_wb
-    logic rvfi_stage_rf_wr_suppress_wb;
-    logic rvfi_rf_wr_suppress_wb;
-
-    // Set when RF write from load data is suppressed due to an integrity error
-    assign rvfi_rf_wr_suppress_wb =
-      instr_done_wb & ~rf_we_wb_o & outstanding_load_wb & lsu_load_resp_intg_err;
-
-    always@(posedge clk_i or negedge rst_ni) begin
-      if (!rst_ni) begin
-        rvfi_stage_rf_wr_suppress_wb <= 1'b0;
-      end else if (rvfi_wb_done) begin
-        rvfi_stage_rf_wr_suppress_wb <= rvfi_rf_wr_suppress_wb;
-      end
-    end
-
-    assign rvfi_ext_rf_wr_suppress = rvfi_stage_rf_wr_suppress_wb;
-  end else begin : g_rvfi_no_rf_wr_suppress_wb
-    assign rvfi_ext_rf_wr_suppress = 1'b0;
   end
 
   // rvfi_intr must be set for first instruction that is part of a trap handler.
@@ -2152,8 +2212,9 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
   always_comb begin
     rvfi_set_trap_pc_d = rvfi_set_trap_pc_q;
 
-    if (pc_set && pc_mux_id == PC_EXC &&
-        (exc_pc_mux_id == EXC_PC_EXC || exc_pc_mux_id == EXC_PC_IRQ)) begin
+    //if (pc_set && pc_mux_id == PC_EXC &&           // kliu - interrupt only 
+    //    (exc_pc_mux_id == EXC_PC_EXC || exc_pc_mux_id == EXC_PC_IRQ)) begin   
+    if (pc_set && pc_mux_id == PC_EXC && (exc_pc_mux_id == EXC_PC_IRQ)) begin
       // PC is set to enter a trap handler
       rvfi_set_trap_pc_d = 1'b1;
     end else if (rvfi_set_trap_pc_q && rvfi_id_done) begin
@@ -2181,79 +2242,5 @@ module ibex_core import ibex_pkg::*; import cheri_pkg::*; #(
 
   // Certain parameter combinations are not supported
   `ASSERT_INIT(IllegalParamSecure, !(SecureIbex && (RV32M == RV32MNone)))
-
-  // If the ID stage signals its ready the mult/div FSMs must be idle in the following cycle
-  `ASSERT(MultDivFSMIdleOnIdReady, id_in_ready |=> ex_block_i.sva_multdiv_fsm_idle)
-
-  //////////
-  // FCOV //
-  //////////
-
-`ifndef SYNTHESIS
-  // fcov signals for V2S
-  `DV_FCOV_SIGNAL_GEN_IF(logic, rf_ecc_err_a_id, gen_regfile_ecc.rf_ecc_err_a_id, RegFileECC)
-  `DV_FCOV_SIGNAL_GEN_IF(logic, rf_ecc_err_b_id, gen_regfile_ecc.rf_ecc_err_b_id, RegFileECC)
-
-  // fcov signals for CSR access. These are complicated by illegal accesses. Where an access is
-  // legal `csr_op_en` signals the operation occurring, but this is deasserted where an access is
-  // illegal. Instead `illegal_insn_id` confirms the instruction is taking an illegal instruction
-  // exception.
-  // All CSR operations perform a read, `CSR_OP_READ` is the only one that only performs a read
-  `DV_FCOV_SIGNAL(logic, csr_read_only,
-      (csr_op == CSR_OP_READ) && csr_access && (csr_op_en || illegal_insn_id))
-  `DV_FCOV_SIGNAL(logic, csr_write,
-      cs_registers_i.csr_wr && csr_access && (csr_op_en || illegal_insn_id))
-
-  if (PMPEnable) begin : g_pmp_fcov_signals
-    logic [PMPNumRegions-1:0] fcov_pmp_region_ichan_priority;
-    logic [PMPNumRegions-1:0] fcov_pmp_region_ichan2_priority;
-    logic [PMPNumRegions-1:0] fcov_pmp_region_dchan_priority;
-
-    logic unused_fcov_pmp_region_priority;
-
-    assign unused_fcov_pmp_region_priority = ^{fcov_pmp_region_ichan_priority,
-                                               fcov_pmp_region_ichan2_priority,
-                                               fcov_pmp_region_dchan_priority};
-
-    for (genvar i_region = 0; i_region < PMPNumRegions; i_region += 1) begin : g_pmp_region_fcov
-      `DV_FCOV_SIGNAL(logic, pmp_region_ichan_access,
-          g_pmp.pmp_i.region_match_all[PMP_I][i_region] & if_stage_i.if_id_pipe_reg_we)
-      `DV_FCOV_SIGNAL(logic, pmp_region_ichan2_access,
-          g_pmp.pmp_i.region_match_all[PMP_I2][i_region] & if_stage_i.if_id_pipe_reg_we)
-      `DV_FCOV_SIGNAL(logic, pmp_region_dchan_access,
-          g_pmp.pmp_i.region_match_all[PMP_D][i_region] & data_req_out)
-      // pmp_cfg[5:6] is reserved and because of that the width of it inside cs_registers module
-      // is 6-bit.
-      `DV_FCOV_SIGNAL(logic, warl_check_pmpcfg,
-          fcov_csr_write &&
-          (cs_registers_i.g_pmp_registers.g_pmp_csrs[i_region].u_pmp_cfg_csr.wr_data_i !=
-          {cs_registers_i.csr_wdata_int[(i_region%4)*PMP_CFG_W+:5],
-           cs_registers_i.csr_wdata_int[(i_region%4)*PMP_CFG_W+7]}))
-
-      if (i_region > 0) begin : g_region_priority
-        assign fcov_pmp_region_ichan_priority[i_region] =
-          g_pmp.pmp_i.region_match_all[PMP_I][i_region] &
-          ~|g_pmp.pmp_i.region_match_all[PMP_I][i_region-1:0];
-
-        assign fcov_pmp_region_ichan2_priority[i_region] =
-          g_pmp.pmp_i.region_match_all[PMP_I2][i_region] &
-          ~|g_pmp.pmp_i.region_match_all[PMP_I2][i_region-1:0];
-
-        assign fcov_pmp_region_dchan_priority[i_region] =
-          g_pmp.pmp_i.region_match_all[PMP_D][i_region] &
-          ~|g_pmp.pmp_i.region_match_all[PMP_D][i_region-1:0];
-      end else begin : g_region_highest_priority
-        assign fcov_pmp_region_ichan_priority[i_region] =
-          g_pmp.pmp_i.region_match_all[PMP_I][i_region];
-
-        assign fcov_pmp_region_ichan2_priority[i_region] =
-          g_pmp.pmp_i.region_match_all[PMP_I2][i_region];
-
-        assign fcov_pmp_region_dchan_priority[i_region] =
-          g_pmp.pmp_i.region_match_all[PMP_D][i_region];
-      end
-    end
-  end
-`endif
 
 endmodule

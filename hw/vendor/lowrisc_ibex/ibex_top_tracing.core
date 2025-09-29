@@ -77,12 +77,6 @@ parameters:
     default: 0
     description: "Enables static branch prediction (EXPERIMENTAL)"
 
-  DbgTriggerEn:
-    datatype: int
-    default: 0
-    paramtype: vlogparam
-    description: "Enable support for debug triggers. "
-
   SecureIbex:
     datatype: int
     default: 0
@@ -113,18 +107,6 @@ parameters:
     paramtype: vlogparam
     description: "Number of PMP regions"
 
-  MHPMCounterNum:
-    datatype: int
-    paramtype: vlogparam
-    default: 0
-    description: Number of performance monitor event counters [0/29]
-
-  MHPMCounterWidth:
-    datatype: int
-    paramtype: vlogparam
-    default: 40
-    description: Bit width of performance monitor event counters [32/64]
-
 targets:
   default: &default_target
     filesets:
@@ -147,20 +129,20 @@ targets:
       - BranchTargetALU
       - WritebackStage
       - BranchPredictor
-      - DbgTriggerEn
       - SecureIbex
       - ICacheScramble
       - PMPEnable
       - PMPGranularity
       - PMPNumRegions
-      - MHPMCounterNum
-      - MHPMCounterWidth
     default_tool: verilator
     tools:
       verilator:
         mode: lint-only
         verilator_options:
-          - "-Wall"
+          - --warn-fatal 0
+          - --Wno-UNOPTFLAT
+          - --Wno-UNUSED
+          - --error-limit 10000
           # RAM primitives wider than 64bit (required for ECC) fail to build in
           # Verilator without increasing the unroll count (see Verilator#1266)
           - "--unroll-count 72"
